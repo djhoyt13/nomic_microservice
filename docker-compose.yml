@@ -17,7 +17,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
+      - DATABASE_URL=postgresql://postgres:postgres@db:5433/embeddings
     depends_on:
       - db
 
@@ -28,7 +28,7 @@ services:
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=embeddings
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
