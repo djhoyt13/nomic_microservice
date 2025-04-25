@@ -1,13 +1,23 @@
 version: '3.8'
 
 services:
-  app:
+  nomic_service:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
       - NOMIC_API_KEY=${NOMIC_API_KEY}
+      - DB_SERVICE_URL=http://db_service:8001
+    depends_on:
+      - db_service
+      - db
+
+  db_service:
+    build: ./db_service
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
     depends_on:
       - db
 

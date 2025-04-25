@@ -1,120 +1,254 @@
-# Nomic Embedding Microservice
+# Nomic Microservices
 
-A containerized microservice that provides document embedding and similarity search capabilities using the Nomic embedding model and PostgreSQL with PGVector for persistent storage.
-
-## Features
-
-- Document embedding generation using Nomic
-- Similarity search using PGVector
-- Persistent storage in PostgreSQL
-- Metadata support
-- RESTful API interface
+This project consists of two microservices:
+1. Database Service - A FastAPI service for storing and searching document embeddings
+2. Embedding Service - A FastAPI service for generating embeddings using Nomic's embedding model
 
 ## Prerequisites
 
+- Python 3.8+
 - Docker and Docker Compose
-- Nomic API key (set as environment variable `NOMIC_API_KEY`)
+- PostgreSQL 13+ with pgvector extension
+- Nomic API key (for the embedding service)
 
-## Running the Service
+## Environment Setup
 
-1. Create a `.env` file in the project root with your Nomic API key:
+1. Create a `.env` file in the root directory with the following variables:
+
+```env
+# Database Service
+DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
+
+# Embedding Service
+NOMIC_API_KEY=your_nomic_api_key
+```
+
+## Database Service
+
+The database service provides endpoints for storing and searching document embeddings using PostgreSQL with pgvector.
+
+### Features
+- Store document embeddings with metadata
+- Search for similar documents using cosine similarity
+- Health check endpoint
+- Comprehensive error handling
+- Connection pooling and retry mechanisms
+
+### API Endpoints
+
+- `POST /store` - Store a document embedding
+  ```json
+  {
+    "text": "document text",
+    "embedding": [0.1, 0.2, ...], // 768-dimensional vector
+    "metadata": {"key": "value"} // optional
+  }
+  ```
+
+- `POST /search` - Search for similar documents
+  ```json
+  {
+    "embedding": [0.1, 0.2, ...], // 768-dimensional vector
+    "top_k": 5 // optional, defaults to 5
+  }
+  ```
+
+- `GET /health` - Check service health
+
+### Running the Database Service
+
+1. Using Docker Compose (recommended):
+   ```bash
+   docker-compose up db_service
+   ```
+
+2. Running locally:
+   ```bash
+   cd db_service
+   pip install -r requirements.txt
+   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   ```
+
+## Embedding Service
+
+The embedding service generates embeddings using Nomic's embedding model.
+
+### Features
+- Generate embeddings for text documents
+- Batch processing support
+- Error handling and retry mechanisms
+- Rate limiting
+
+### API Endpoints
+
+- `POST /embed` - Generate embeddings for text
+  ```json
+  {
+    "text": "document text"
+  }
+  ```
+
+- `POST /embed_batch` - Generate embeddings for multiple texts
+  ```json
+  {
+    "texts": ["text1", "text2", ...]
+  }
+  ```
+
+### Running the Embedding Service
+
+1. Using Docker Compose (recommended):
+   ```bash
+   docker-compose up embedding_service
+   ```
+
+2. Running locally:
+   ```bash
+   cd embedding_service
+   pip install -r requirements.txt
+   uvicorn app.main:app --host 0.0.0.0 --port 8001
+   ```
+
+## Docker Compose Setup
+
+The project includes a `docker-compose.yml` file for easy deployment:
+
 ```bash
-NOMIC_API_KEY=your_api_key_here
-```
+# Start all services
+docker-compose up
 
-2. Start the services using Docker Compose:
-```bash
-docker-compose up --build
-```
+# Start specific service
+docker-compose up db_service
+docker-compose up embedding_service
 
-The service will be available at `http://localhost:8000`
+# View logs
+docker-compose logs -f
 
-## API Endpoints
-
-### Embed Documents
-- **POST** `/embed`
-- Request body:
-```json
-{
-    "text": "Your document text here",
-    "metadata": {
-        "source": "optional metadata"
-    }
-}
-```
-
-### Search Similar Documents
-- **POST** `/search`
-- Request body:
-```json
-{
-    "text": "Your search query",
-    "top_k": 5
-}
-```
-
-### Health Check
-- **GET** `/health`
-
-## Example Usage
-
-```python
-import requests
-
-# Embed a document
-response = requests.post(
-    "http://localhost:8000/embed",
-    json={
-        "text": "This is a sample document",
-        "metadata": {"source": "test"}
-    }
-)
-print(response.json())
-
-# Search for similar documents
-response = requests.post(
-    "http://localhost:8000/search",
-    json={
-        "text": "Find similar documents",
-        "top_k": 3
-    }
-)
-print(response.json())
-```
-
-## Database Access
-
-The PostgreSQL database is accessible at:
-- Host: localhost
-- Port: 5432
-- Database: embeddings
-- Username: postgres
-- Password: postgres
-
-## Development
-
-To stop the services:
-```bash
+# Stop services
 docker-compose down
 ```
 
-To remove all data (including the database volume):
+## Development
+
+### Setting up the Development Environment
+
+1. Clone the repository
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### Running Tests
+
 ```bash
-docker-compose down -v
+# Database Service Tests
+cd db_service
+pytest
+
+# Embedding Service Tests
+cd embedding_service
+pytest
 ```
 
-## Architecture
+### Code Style
 
-The service consists of:
-1. FastAPI application for handling HTTP requests
-2. Nomic embedding model for generating embeddings
-3. PostgreSQL with PGVector extension for vector storage and similarity search
-4. Docker containers for easy deployment
+The project uses:
+- Black for code formatting
+- isort for import sorting
+- flake8 for linting
+
+Run formatting and linting:
+```bash
+# Format code
+black .
+isort .
+
+# Run linter
+flake8
+```
 
 ## Error Handling
 
-The service includes proper error handling for:
-- Database connection issues
-- Invalid input data
-- Nomic API errors
-- Vector search failures
+Both services implement comprehensive error handling:
+
+- Database Service:
+  - Database connection errors
+  - Validation errors
+  - Service errors
+  - HTTP exceptions
+
+- Embedding Service:
+  - API errors
+  - Rate limiting
+  - Validation errors
+  - Service errors
+
+All errors return consistent JSON responses with:
+- Error message
+- Details (when available)
+- Timestamp
+
+## Monitoring and Logging
+
+Both services implement logging with:
+- Timestamps
+- Log levels
+- Context information
+- Error details
+
+Logs are available through:
+- Docker logs
+- Local file system (when running locally)
+- Standard output
+
+## Security Considerations
+
+1. API Keys:
+   - Store API keys in environment variables
+   - Never commit API keys to version control
+   - Use .env file for local development
+
+2. Database:
+   - Use strong passwords
+   - Limit database access
+   - Use connection pooling
+   - Implement proper error handling
+
+3. API Security:
+   - CORS configuration
+   - Input validation
+   - Rate limiting
+   - Error handling
+
+## Troubleshooting
+
+### Common Issues
+
+1. Database Connection Issues:
+   - Check DATABASE_URL configuration
+   - Verify PostgreSQL is running
+   - Check pgvector extension is installed
+
+2. API Key Issues:
+   - Verify NOMIC_API_KEY is set
+   - Check API key permissions
+   - Monitor rate limits
+
+3. Service Health:
+   - Use health check endpoints
+   - Check service logs
+   - Monitor resource usage
+
+### Getting Help
+
+For issues not covered in this README:
+1. Check the service logs
+2. Review the error responses
+3. Consult the API documentation
+4. Open an issue in the repository

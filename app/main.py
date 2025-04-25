@@ -1,90 +1,211 @@
-from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional
 import numpy as np
 from nomic import embed
-from sqlalchemy.orm import Session
-from .database import get_db, DocumentEmbedding, init_db
+import requests
 import os
 from dotenv import load_dotenv
+import logging
+from datetime import datetime
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
 app = FastAPI(title="Nomic Embedding Service")
 
-# Initialize database
-@app.on_event("startup")
-async def startup_event():
-    init_db()
+# Database service URL
+DB_SERVICE_URL = os.getenv("DB_SERVICE_URL", "http://db_service:8001")
 
-# Data models
+# Custom exceptions
+class NomicServiceError(Exception):
+    """Base exception for Nomic service errors"""
+    pass
+
+class EmbeddingError(NomicServiceError):
+    """Exception raised for errors in embedding generation"""
+    pass
+
+class DatabaseServiceError(NomicServiceError):
+    """Exception raised for errors in database service communication"""
+    pass
+
+class ValidationError(NomicServiceError):
+    """Exception raised for input validation errors"""
+    pass
+
+# Data models with validation
 class Document(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1, max_length=10000)
     metadata: Optional[dict] = None
 
 class Query(BaseModel):
-    text: str
-    top_k: Optional[int] = 5
+    text: str = Field(..., min_length=1, max_length=10000)
+    top_k: Optional[int] = Field(default=5, ge=1, le=100)
 
-class SearchResult(BaseModel):
-    id: int
-    text: str
-    metadata: Optional[dict]
-    similarity: float
+# Error handlers
+@app.exception_handler(NomicServiceError)
+async def nomic_service_error_handler(request: Request, exc: NomicServiceError):
+    logger.error(f"Nomic service error: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": str(exc), "timestamp": datetime.now(datetime.UTC).isoformat()}
+    )
+
+@app.exception_handler(ValidationError)
+async def validation_error_handler(request: Request, exc: ValidationError):
+    logger.warning(f"Validation error: {str(exc)}")
+    return JSONResponse(
+        status_code=400,
+        content={"error": str(exc), "timestamp": datetime.now(datetime.UTC).isoformat()}
+    )
+
+@app.exception_handler(requests.exceptions.RequestException)
+async def request_exception_handler(request: Request, exc: requests.exceptions.RequestException):
+    logger.error(f"Database service communication error: {str(exc)}")
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "Database service is currently unavailable",
+            "details": str(exc),
+            "timestamp": datetime.now(datetime.UTC).isoformat()
+        }
+    )
 
 @app.post("/embed")
-async def create_embedding(document: Document, db: Session = Depends(get_db)):
+async def create_embedding(document: Document):
     try:
-        # Generate embedding using Nomic
-        embedding = embed.text(
-            texts=[document.text],
-            model='nomic-embed-text-v1'
-        )
-        
-        # Store in database
-        db_embedding = DocumentEmbedding(
-            text=document.text,
-            embedding=embedding.tolist()[0],  # Convert to list for PGVector
-            metadata=document.metadata
-        )
-        db.add(db_embedding)
-        db.commit()
-        db.refresh(db_embedding)
-            
-        return {"id": db_embedding.id, "status": "success"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        # Validate input
+        if not document.text.strip():
+            raise ValidationError("Document text cannot be empty or whitespace")
 
-@app.post("/search", response_model=List[SearchResult])
-async def search_similar(query: Query, db: Session = Depends(get_db)):
-    try:
-        # Generate query embedding
-        query_embedding = embed.text(
-            texts=[query.text],
-            model='nomic-embed-text-v1'
-        )
+        # Generate embedding using Nomic
+        try:
+            embedding = embed.text(
+                texts=[document.text],
+                model='nomic-embed-text-v1'
+            )
+        except Exception as e:
+            logger.error(f"Failed to generate embedding: {str(e)}")
+            raise EmbeddingError(f"Failed to generate embedding: {str(e)}")
         
-        # Search using PGVector
-        results = db.query(DocumentEmbedding).order_by(
-            DocumentEmbedding.embedding.cosine_distance(query_embedding.tolist()[0])
-        ).limit(query.top_k).all()
-        
-        # Format results
-        formatted_results = []
-        for doc in results:
-            similarity = 1 - doc.embedding.cosine_distance(query_embedding.tolist()[0])
-            formatted_results.append(SearchResult(
-                id=doc.id,
-                text=doc.text,
-                metadata=doc.metadata,
-                similarity=float(similarity)
-            ))
-        
-        return formatted_results
+        # Store in database service
+        try:
+            response = requests.post(
+                f"{DB_SERVICE_URL}/store",
+                json={
+                    "text": document.text,
+                    "embedding": embedding.tolist()[0],
+                    "metadata": document.metadata
+                },
+                timeout=5  # Add timeout for database service calls
+            )
+            
+            if response.status_code != 200:
+                error_detail = response.json().get('detail', 'Unknown error')
+                logger.error(f"Database service error: {error_detail}")
+                raise DatabaseServiceError(f"Database service error: {error_detail}")
+                
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error("Database service request timed out")
+            raise DatabaseServiceError("Database service request timed out")
+        except requests.exceptions.ConnectionError:
+            logger.error("Failed to connect to database service")
+            raise DatabaseServiceError("Failed to connect to database service")
+            
+    except ValidationError as e:
+        raise
+    except NomicServiceError as e:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error: {str(e)}")
+        raise NomicServiceError(f"Unexpected error: {str(e)}")
+
+@app.post("/search")
+async def search_similar(query: Query):
+    try:
+        # Validate input
+        if not query.text.strip():
+            raise ValidationError("Query text cannot be empty or whitespace")
+
+        # Generate query embedding
+        try:
+            query_embedding = embed.text(
+                texts=[query.text],
+                model='nomic-embed-text-v1'
+            )
+        except Exception as e:
+            logger.error(f"Failed to generate query embedding: {str(e)}")
+            raise EmbeddingError(f"Failed to generate query embedding: {str(e)}")
+        
+        # Search in database service
+        try:
+            response = requests.post(
+                f"{DB_SERVICE_URL}/search",
+                json={
+                    "embedding": query_embedding.tolist()[0],
+                    "top_k": query.top_k
+                },
+                timeout=5  # Add timeout for database service calls
+            )
+            
+            if response.status_code != 200:
+                error_detail = response.json().get('detail', 'Unknown error')
+                logger.error(f"Database service error: {error_detail}")
+                raise DatabaseServiceError(f"Database service error: {error_detail}")
+                
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error("Database service request timed out")
+            raise DatabaseServiceError("Database service request timed out")
+        except requests.exceptions.ConnectionError:
+            logger.error("Failed to connect to database service")
+            raise DatabaseServiceError("Failed to connect to database service")
+            
+    except ValidationError as e:
+        raise
+    except NomicServiceError as e:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise NomicServiceError(f"Unexpected error: {str(e)}")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"} 
+    try:
+        # Check database service health
+        response = requests.get(f"{DB_SERVICE_URL}/health", timeout=2)
+        if response.status_code != 200:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "database_service": "unavailable",
+                    "timestamp": datetime.now(datetime.UTC).isoformat()
+                }
+            )
+        
+        return {
+            "status": "healthy",
+            "database_service": "available",
+            "timestamp": datetime.now(datetime.UTC).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "database_service": "unavailable",
+                "error": str(e),
+                "timestamp": datetime.now(datetime.UTC).isoformat()
+            }
+        ) 
