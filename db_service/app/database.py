@@ -1,15 +1,14 @@
-from sqlalchemy import create_engine, Column, Integer, String, JSON, event
+from sqlalchemy import create_engine, Column, Integer, String, JSON, event, text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
-from pgvector.sqlalchemy import Vector
 import os
 from dotenv import load_dotenv
 import logging
 from typing import Generator, Optional
 from contextlib import contextmanager
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Configure logging
 logging.basicConfig(
@@ -38,25 +37,29 @@ class DatabaseSessionError(DatabaseError):
     pass
 
 # Database configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/embeddings")
+DB_DIR = os.path.join(os.getcwd(), "db_service", "data")
+DB_FILE = os.path.join(DB_DIR, "embeddings.db")
+
+# Create database directory if it doesn't exist
+if not os.path.exists(DB_DIR):
+    os.makedirs(DB_DIR)
+
+DATABASE_URL = f"sqlite:///{DB_FILE}"
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds
 
 def create_db_engine():
-    """Create database engine with retry logic and connection pooling"""
+    """Create database engine with retry logic"""
     try:
+        # Create SQLite engine directly
         engine = create_engine(
             DATABASE_URL,
-            pool_size=5,
-            max_overflow=10,
-            pool_timeout=30,
-            pool_recycle=1800,
-            pool_pre_ping=True
+            connect_args={"check_same_thread": False}  # Required for SQLite
         )
         
         # Test the connection
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.execute(text("SELECT 1"))
             
         return engine
     except OperationalError as e:
@@ -90,9 +93,9 @@ class DocumentEmbedding(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     text = Column(String, nullable=False)
-    embedding = Column(Vector(768))  # Nomic embeddings are 768-dimensional
-    metadata = Column(JSON)
-    created_at = Column(String, default=lambda: datetime.now(datetime.UTC).isoformat())
+    embedding = Column(JSON)  # Store embeddings as JSON
+    document_metadata = Column(JSON)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 # Event listeners for connection management
 @event.listens_for(engine, "connect")
@@ -108,8 +111,13 @@ def checkin(dbapi_connection, connection_record):
     logger.debug("Database connection returned to pool")
 
 def init_db():
-    """Initialize database with error handling and retry logic"""
+    """Initialize database with error handling"""
     try:
+        # Create database directory if it doesn't exist
+        db_dir = os.path.dirname(DB_FILE)
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir)
+            
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created successfully")
     except SQLAlchemyError as e:
@@ -146,9 +154,18 @@ def get_db() -> Generator[Session, None, None]:
 def check_db_connection() -> bool:
     """Check if database connection is available"""
     try:
+        logger.info("Starting database connection check...")
+        # Create database file if it doesn't exist
+        if not os.path.exists(DB_FILE):
+            logger.info(f"Database file does not exist at {DB_FILE}, creating it...")
+            init_db()
+            logger.info("Database file created successfully")
+            
+        logger.info("Testing database connection...")
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
-        return True
+            result = conn.execute(text("SELECT 1")).fetchone()
+            logger.info(f"Database connection test successful: {result}")
+            return True
     except Exception as e:
-        logger.error(f"Database connection check failed: {str(e)}")
+        logger.error(f"Database connection check failed with error: {str(e)}")
         return False 

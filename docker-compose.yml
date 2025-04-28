@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   nomic_service:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
@@ -11,13 +13,15 @@ services:
     depends_on:
       - db_service
       - db
+    command: >
+      sh -c "pip install uvicorn && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
   db_service:
     build: ./db_service
     ports:
       - "8001:8001"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5433/embeddings
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
     depends_on:
       - db
 

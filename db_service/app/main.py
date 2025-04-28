@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 import numpy as np
 from sqlalchemy.orm import Session
@@ -16,7 +16,7 @@ from .database import (
 import os
 from dotenv import load_dotenv
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 import time
 
@@ -48,7 +48,8 @@ class Document(BaseModel):
     embedding: List[float]
     metadata: Optional[Dict[str, Any]] = None
 
-    @validator('embedding')
+    @field_validator('embedding')
+    @classmethod
     def validate_embedding(cls, v):
         if len(v) != 768:
             raise ValueError("Embedding must be 768-dimensional")
@@ -58,7 +59,8 @@ class Query(BaseModel):
     embedding: List[float]
     top_k: Optional[int] = Field(default=5, ge=1, le=100)
 
-    @validator('embedding')
+    @field_validator('embedding')
+    @classmethod
     def validate_embedding(cls, v):
         if len(v) != 768:
             raise ValueError("Embedding must be 768-dimensional")
@@ -96,11 +98,13 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down database service...")
     # Add any cleanup code here if needed
 
+# Create FastAPI app
 app = FastAPI(
-    title="Vector Database Service",
+    title="Document Embedding Service",
     description="Service for storing and searching document embeddings",
     version="1.0.0",
-    lifespan=lifespan
+    docs_url="/docs",  # Enable Swagger UI
+    redoc_url="/redoc"  # Enable ReDoc
 )
 
 # Add CORS middleware
@@ -112,6 +116,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Basic route for testing
+@app.get("/")
+async def root():
+    return {"message": "Document Embedding Service is running"}
+
 # Error handlers
 @app.exception_handler(ServiceError)
 async def service_error_handler(request, exc: ServiceError):
@@ -120,7 +129,7 @@ async def service_error_handler(request, exc: ServiceError):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=ErrorResponse(
             error=str(exc),
-            timestamp=datetime.now(datetime.UTC).isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         ).dict()
     )
 
@@ -132,7 +141,7 @@ async def database_error_handler(request, exc: DatabaseError):
         content=ErrorResponse(
             error="Database service error",
             details=str(exc),
-            timestamp=datetime.now(datetime.UTC).isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         ).dict()
     )
 
@@ -144,7 +153,7 @@ async def validation_error_handler(request, exc: ValidationError):
         content=ErrorResponse(
             error="Validation error",
             details=str(exc),
-            timestamp=datetime.now(datetime.UTC).isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         ).dict()
     )
 
@@ -155,7 +164,7 @@ async def http_exception_handler(request, exc: HTTPException):
         status_code=exc.status_code,
         content=ErrorResponse(
             error=exc.detail,
-            timestamp=datetime.now(datetime.UTC).isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         ).dict()
     )
 
@@ -199,15 +208,28 @@ async def search_similar(query: Query, db: Session = Depends(get_db)):
         if len(query.embedding) != 768:
             raise ValidationError("Embedding must be 768-dimensional")
 
-        # Search using PGVector
-        results = db.query(DocumentEmbedding).order_by(
-            DocumentEmbedding.embedding.cosine_distance(query.embedding)
-        ).limit(query.top_k).all()
+        # Convert query embedding to numpy array
+        query_embedding = np.array(query.embedding)
+        
+        # Get all documents
+        results = db.query(DocumentEmbedding).all()
+        
+        # Calculate similarities
+        similarities = []
+        for doc in results:
+            doc_embedding = np.array(doc.embedding)
+            similarity = np.dot(query_embedding, doc_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
+            )
+            similarities.append((doc, similarity))
+        
+        # Sort by similarity and take top_k
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        top_results = similarities[:query.top_k]
         
         # Format results
         formatted_results = []
-        for doc in results:
-            similarity = 1 - doc.embedding.cosine_distance(query.embedding)
+        for doc, similarity in top_results:
             formatted_results.append(SearchResult(
                 id=doc.id,
                 text=doc.text,
@@ -226,22 +248,34 @@ async def search_similar(query: Query, db: Session = Depends(get_db)):
         logger.error(f"Unexpected error while searching: {str(e)}")
         raise ServiceError(f"Unexpected error while searching: {str(e)}")
 
-@app.get("/health", response_model=Dict[str, Any])
+@app.get("/health")
 async def health_check():
     try:
         # Check database connection
+        logger.info("Starting health check...")
         db_healthy = check_db_connection()
+        logger.info(f"Database health check result: {db_healthy}")
         
-        return {
-            "status": "healthy" if db_healthy else "unhealthy",
-            "database": "connected" if db_healthy else "disconnected",
-            "timestamp": datetime.now(datetime.UTC).isoformat()
-        }
+        if not db_healthy:
+            logger.warning("Database health check failed")
+            return {"status": "error", "message": "Database connection failed"}
+        
+        logger.info("Health check successful")
+        return {"status": "ok"}
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {
-            "status": "unhealthy",
-            "database": "error",
-            "error": str(e),
-            "timestamp": datetime.now(datetime.UTC).isoformat()
-        } 
+        logger.error(f"Health check failed with error: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting database service...")
+    try:
+        init_db()
+        logger.info("Database initialized successfully")
+    except DatabaseInitializationError as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during startup: {str(e)}")
+        raise ServiceError(f"Unexpected error during startup: {str(e)}") 
