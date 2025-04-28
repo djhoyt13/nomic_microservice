@@ -9,6 +9,7 @@ from typing import Generator, Optional
 from contextlib import contextmanager
 import time
 from datetime import datetime, timezone
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -94,8 +95,28 @@ class DocumentEmbedding(Base):
     id = Column(Integer, primary_key=True, index=True)
     text = Column(String, nullable=False)
     embedding = Column(JSON)  # Store embeddings as JSON
-    document_metadata = Column(JSON)
+    doc_metadata = Column(JSON, default={})  # Store metadata as JSON
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __init__(self, **kwargs):
+        if 'metadata' in kwargs:
+            metadata = kwargs.pop('metadata')
+            if metadata is None:
+                kwargs['doc_metadata'] = {}
+            elif not isinstance(metadata, dict):
+                kwargs['doc_metadata'] = {}
+            else:
+                kwargs['doc_metadata'] = metadata
+        super().__init__(**kwargs)
+
+    def to_dict(self):
+        """Convert to dictionary"""
+        return {
+            'id': self.id,
+            'text': self.text,
+            'metadata': self.doc_metadata if self.doc_metadata is not None else {},
+            'created_at': self.created_at.isoformat()
+        }
 
 # Event listeners for connection management
 @event.listens_for(engine, "connect")

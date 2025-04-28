@@ -19,6 +19,8 @@ import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 import time
+from sqlalchemy.orm.attributes import instance_state
+from sqlalchemy.orm import class_mapper
 
 # Configure logging
 logging.basicConfig(
@@ -69,9 +71,19 @@ class Query(BaseModel):
 class SearchResult(BaseModel):
     id: int
     text: str
-    metadata: Optional[Dict[str, Any]]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     similarity: float
     created_at: str
+
+    @field_validator('metadata', mode='before')
+    @classmethod
+    def ensure_dict(cls, v):
+        if v is None:
+            return {}
+        if hasattr(v, '_sa_instance_state'):
+            # This is a SQLAlchemy object, convert it to dict
+            return {}
+        return dict(v)
 
 class ErrorResponse(BaseModel):
     error: str
@@ -130,7 +142,7 @@ async def service_error_handler(request, exc: ServiceError):
         content=ErrorResponse(
             error=str(exc),
             timestamp=datetime.now(timezone.utc).isoformat()
-        ).dict()
+        ).model_dump()
     )
 
 @app.exception_handler(DatabaseError)
@@ -142,7 +154,7 @@ async def database_error_handler(request, exc: DatabaseError):
             error="Database service error",
             details=str(exc),
             timestamp=datetime.now(timezone.utc).isoformat()
-        ).dict()
+        ).model_dump()
     )
 
 @app.exception_handler(ValidationError)
@@ -154,7 +166,7 @@ async def validation_error_handler(request, exc: ValidationError):
             error="Validation error",
             details=str(exc),
             timestamp=datetime.now(timezone.utc).isoformat()
-        ).dict()
+        ).model_dump()
     )
 
 @app.exception_handler(HTTPException)
@@ -165,7 +177,7 @@ async def http_exception_handler(request, exc: HTTPException):
         content=ErrorResponse(
             error=exc.detail,
             timestamp=datetime.now(timezone.utc).isoformat()
-        ).dict()
+        ).model_dump()
     )
 
 @app.post("/store", response_model=Dict[str, Any])
@@ -188,7 +200,7 @@ async def store_document(document: Document, db: Session = Depends(get_db)):
         return {
             "id": db_embedding.id,
             "status": "success",
-            "created_at": db_embedding.created_at
+            "created_at": db_embedding.created_at.isoformat()
         }
     except ValidationError as e:
         raise
@@ -200,6 +212,20 @@ async def store_document(document: Document, db: Session = Depends(get_db)):
         db.rollback()
         logger.error(f"Unexpected error while storing document: {str(e)}")
         raise ServiceError(f"Unexpected error while storing document: {str(e)}")
+
+def object_as_dict(obj):
+    """Convert SQLAlchemy object to dictionary"""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, '_sa_instance_state'):
+        # This is a SQLAlchemy object
+        return {}
+    try:
+        return dict(obj)
+    except:
+        return {}
 
 @app.post("/search", response_model=List[SearchResult])
 async def search_similar(query: Query, db: Session = Depends(get_db)):
@@ -230,13 +256,15 @@ async def search_similar(query: Query, db: Session = Depends(get_db)):
         # Format results
         formatted_results = []
         for doc, similarity in top_results:
-            formatted_results.append(SearchResult(
-                id=doc.id,
-                text=doc.text,
-                metadata=doc.metadata,
+            doc_dict = doc.to_dict()
+            result = SearchResult(
+                id=doc_dict['id'],
+                text=doc_dict['text'],
+                metadata=doc_dict['metadata'],
                 similarity=float(similarity),
-                created_at=doc.created_at
-            ))
+                created_at=doc_dict['created_at']
+            )
+            formatted_results.append(result)
         
         return formatted_results
     except ValidationError as e:

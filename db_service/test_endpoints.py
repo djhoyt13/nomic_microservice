@@ -2,11 +2,13 @@ import requests
 import json
 import numpy as np
 
-BASE_URL = "http://localhost:8000"
+# Update base URLs to match Docker container ports
+DB_SERVICE_URL = "http://localhost:8001"
+NOMIC_SERVICE_URL = "http://localhost:8000"
 
 def test_health():
     print("Testing health endpoint...")
-    response = requests.get(f"{BASE_URL}/health")
+    response = requests.get(f"{DB_SERVICE_URL}/health")
     print(f"Status code: {response.status_code}")
     print(f"Raw response: {response.text}")
     try:
@@ -23,7 +25,7 @@ def test_store():
         "embedding": np.random.rand(768).tolist(),  # 768-dimensional embedding
         "metadata": {"source": "test", "category": "test"}
     }
-    response = requests.post(f"{BASE_URL}/store", json=document)
+    response = requests.post(f"{DB_SERVICE_URL}/store", json=document)
     print(f"Status code: {response.status_code}")
     print(f"Raw response: {response.text}")
     try:
@@ -40,7 +42,7 @@ def test_search(doc_id):
         "embedding": np.random.rand(768).tolist(),  # 768-dimensional embedding
         "top_k": 5
     }
-    response = requests.post(f"{BASE_URL}/search", json=query)
+    response = requests.post(f"{DB_SERVICE_URL}/search", json=query)
     print(f"Status code: {response.status_code}")
     print(f"Raw response: {response.text}")
     try:
