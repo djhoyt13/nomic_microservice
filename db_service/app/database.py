@@ -1,15 +1,13 @@
-from sqlalchemy import create_engine, Column, Integer, String, JSON, event, text, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, JSON, text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import os
-from dotenv import load_dotenv
 import logging
-from typing import Generator, Optional
+from typing import Generator
 from contextlib import contextmanager
-import time
 from datetime import datetime, timezone
-import json
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -17,8 +15,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 # Custom exceptions
 class DatabaseError(Exception):
@@ -52,7 +48,6 @@ RETRY_DELAY = 2  # seconds
 def create_db_engine():
     """Create database engine with retry logic"""
     try:
-        # Create SQLite engine directly
         engine = create_engine(
             DATABASE_URL,
             connect_args={"check_same_thread": False}  # Required for SQLite
@@ -117,19 +112,6 @@ class DocumentEmbedding(Base):
             'metadata': self.doc_metadata if self.doc_metadata is not None else {},
             'created_at': self.created_at.isoformat()
         }
-
-# Event listeners for connection management
-@event.listens_for(engine, "connect")
-def connect(dbapi_connection, connection_record):
-    logger.info("New database connection established")
-
-@event.listens_for(engine, "checkout")
-def checkout(dbapi_connection, connection_record, connection_proxy):
-    logger.debug("Database connection checked out from pool")
-
-@event.listens_for(engine, "checkin")
-def checkin(dbapi_connection, connection_record):
-    logger.debug("Database connection returned to pool")
 
 def init_db():
     """Initialize database with error handling"""
