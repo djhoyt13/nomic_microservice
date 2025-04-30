@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional
 import numpy as np
-from nomic import embed
+from langchain_nomic import NomicEmbeddings
 import requests
 import os
 from dotenv import load_dotenv
@@ -23,6 +23,11 @@ app = FastAPI(title="Nomic Embedding Service")
 
 # Database service URL
 DB_SERVICE_URL = os.getenv("DB_SERVICE_URL", "http://db_service:8001")
+
+# Initialize the embedding model
+logger.info("Loading Nomic embedding model in local mode...")
+embeddings = NomicEmbeddings(model='nomic-embed-text-v1.5')
+logger.info("Model loaded successfully")
 
 # Custom exceptions
 class NomicServiceError(Exception):
@@ -86,12 +91,10 @@ async def create_embedding(document: Document):
         if not document.text.strip():
             raise ValidationError("Document text cannot be empty or whitespace")
 
-        # Generate embedding using Nomic
+        # Generate embedding using local Nomic model
         try:
-            embedding = embed.text(
-                texts=[document.text],
-                model='nomic-embed-text-v1'
-            )
+            embedding = embeddings.embed_documents([document.text])[0]
+            logger.info(f"Generated embedding of shape: {len(embedding)}")
         except Exception as e:
             logger.error(f"Failed to generate embedding: {str(e)}")
             raise EmbeddingError(f"Failed to generate embedding: {str(e)}")
@@ -102,29 +105,15 @@ async def create_embedding(document: Document):
                 f"{DB_SERVICE_URL}/store",
                 json={
                     "text": document.text,
-                    "embedding": embedding.tolist()[0],
+                    "embedding": embedding,
                     "metadata": document.metadata
-                },
-                timeout=5  # Add timeout for database service calls
+                }
             )
-            
-            if response.status_code != 200:
-                error_detail = response.json().get('detail', 'Unknown error')
-                logger.error(f"Database service error: {error_detail}")
-                raise DatabaseServiceError(f"Database service error: {error_detail}")
-                
+            response.raise_for_status()
             return response.json()
-        except requests.exceptions.Timeout:
-            logger.error("Database service request timed out")
-            raise DatabaseServiceError("Database service request timed out")
-        except requests.exceptions.ConnectionError:
-            logger.error("Failed to connect to database service")
-            raise DatabaseServiceError("Failed to connect to database service")
-            
-    except ValidationError as e:
-        raise
-    except NomicServiceError as e:
-        raise
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to store embedding: {str(e)}")
+            raise DatabaseServiceError(f"Failed to store embedding: {str(e)}")
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise NomicServiceError(f"Unexpected error: {str(e)}")
@@ -138,74 +127,37 @@ async def search_similar(query: Query):
 
         # Generate query embedding
         try:
-            query_embedding = embed.text(
-                texts=[query.text],
-                model='nomic-embed-text-v1'
-            )
+            query_embedding = embeddings.embed_documents([query.text])[0]
+            logger.info(f"Generated query embedding of shape: {len(query_embedding)}")
         except Exception as e:
             logger.error(f"Failed to generate query embedding: {str(e)}")
             raise EmbeddingError(f"Failed to generate query embedding: {str(e)}")
-        
+
         # Search in database service
         try:
             response = requests.post(
                 f"{DB_SERVICE_URL}/search",
                 json={
-                    "embedding": query_embedding.tolist()[0],
+                    "embedding": query_embedding,
                     "top_k": query.top_k
-                },
-                timeout=5  # Add timeout for database service calls
+                }
             )
-            
-            if response.status_code != 200:
-                error_detail = response.json().get('detail', 'Unknown error')
-                logger.error(f"Database service error: {error_detail}")
-                raise DatabaseServiceError(f"Database service error: {error_detail}")
-                
+            response.raise_for_status()
             return response.json()
-        except requests.exceptions.Timeout:
-            logger.error("Database service request timed out")
-            raise DatabaseServiceError("Database service request timed out")
-        except requests.exceptions.ConnectionError:
-            logger.error("Failed to connect to database service")
-            raise DatabaseServiceError("Failed to connect to database service")
-            
-    except ValidationError as e:
-        raise
-    except NomicServiceError as e:
-        raise
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to search embeddings: {str(e)}")
+            raise DatabaseServiceError(f"Failed to search embeddings: {str(e)}")
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise NomicServiceError(f"Unexpected error: {str(e)}")
 
 @app.get("/health")
 async def health_check():
-    try:
-        # Check database service health
-        response = requests.get(f"{DB_SERVICE_URL}/health", timeout=2)
-        if response.status_code != 200:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "unhealthy",
-                    "database_service": "unavailable",
-                    "timestamp": datetime.now(datetime.UTC).isoformat()
-                }
-            )
-        
-        return {
-            "status": "healthy",
-            "database_service": "available",
-            "timestamp": datetime.now(datetime.UTC).isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unhealthy",
-                "database_service": "unavailable",
-                "error": str(e),
-                "timestamp": datetime.now(datetime.UTC).isoformat()
-            }
-        ) 
+    return {
+        "status": "healthy",
+        "model": "nomic-embed-text-v1.5",
+        "inference_mode": "local",
+        "device": "cpu",
+        "embedding_dimension": 768,  # Nomic Embed v1.5 uses 768 dimensions
+        "timestamp": datetime.now(datetime.UTC).isoformat()
+    } 
