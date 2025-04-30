@@ -2,14 +2,16 @@ from sqlalchemy import create_engine, Column, Integer, String, JSON, event, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
-from pgvector.sqlalchemy import Vector
 import os
 from dotenv import load_dotenv
 import logging
-from typing import Generator, Optional
+from typing import Generator, Optional, List
 from contextlib import contextmanager
 import time
 from datetime import datetime, timezone
+import json
+import numpy as np
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -38,25 +40,20 @@ class DatabaseSessionError(DatabaseError):
     pass
 
 # Database configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/embeddings")
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
+DB_DIR = os.getenv("DB_DIR", "data")
+DB_NAME = os.getenv("DB_NAME", "embeddings.db")
+DATABASE_URL = f"sqlite:///{Path(DB_DIR) / DB_NAME}"
+
+# Ensure DB directory exists
+os.makedirs(DB_DIR, exist_ok=True)
 
 def create_db_engine():
-    """Create database engine with retry logic and connection pooling"""
+    """Create SQLite database engine"""
     try:
-        logger.info(f"Attempting to connect to database at {DATABASE_URL}")
+        logger.info(f"Creating SQLite database at {DATABASE_URL}")
         engine = create_engine(
             DATABASE_URL,
-            pool_size=5,
-            max_overflow=10,
-            pool_timeout=30,
-            pool_recycle=1800,
-            pool_pre_ping=True,
-            connect_args={
-                "connect_timeout": 10,
-                "application_name": "db_service"
-            }
+            connect_args={"check_same_thread": False}  # Required for SQLite with FastAPI
         )
         
         # Test the connection
@@ -65,32 +62,13 @@ def create_db_engine():
             logger.info("Database connection test successful")
             
         return engine
-    except OperationalError as e:
-        logger.error(f"Failed to connect to database: {str(e)}")
-        raise DatabaseConnectionError(f"Failed to connect to database: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error creating database engine: {str(e)}")
-        raise DatabaseError(f"Unexpected error creating database engine: {str(e)}")
+        logger.error(f"Failed to create database engine: {str(e)}")
+        raise DatabaseConnectionError(f"Failed to create database engine: {str(e)}")
 
-# Create SQLAlchemy engine with retry logic
-engine = None
-for attempt in range(MAX_RETRIES):
-    try:
-        engine = create_db_engine()
-        logger.info("Database engine created successfully")
-        break
-    except DatabaseConnectionError as e:
-        if attempt == MAX_RETRIES - 1:
-            logger.error("Failed to create database engine after all retry attempts")
-            raise
-        logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {RETRY_DELAY} seconds...")
-        time.sleep(RETRY_DELAY)
-
-if not engine:
-    raise DatabaseConnectionError("Failed to create database engine after multiple attempts")
-
+# Create SQLAlchemy engine
+engine = create_db_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
 class DocumentEmbedding(Base):
@@ -98,25 +76,24 @@ class DocumentEmbedding(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     text = Column(String, nullable=False)
-    embedding = Column(Vector(768))  # Nomic embeddings are 768-dimensional
+    embedding = Column(String, nullable=False)  # Store as JSON string
     document_metadata = Column(JSON)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
-# Event listeners for connection management
-@event.listens_for(engine, "connect")
-def connect(dbapi_connection, connection_record):
-    logger.info("New database connection established")
+    def __init__(self, text: str, embedding: list, metadata: Optional[dict] = None):
+        self.text = text
+        self.embedding = json.dumps(embedding)  # Convert list to JSON string
+        self.document_metadata = metadata
 
-@event.listens_for(engine, "checkout")
-def checkout(dbapi_connection, connection_record, connection_proxy):
-    logger.debug("Database connection checked out from pool")
+    def get_embedding(self) -> list:
+        """Convert stored JSON string back to list"""
+        return json.loads(self.embedding)
 
-@event.listens_for(engine, "checkin")
-def checkin(dbapi_connection, connection_record):
-    logger.debug("Database connection returned to pool")
+    def __repr__(self):
+        return f"<DocumentEmbedding(id={self.id}, text='{self.text[:50]}...', created_at='{self.created_at}')>"
 
 def init_db():
-    """Initialize database with error handling and retry logic"""
+    """Initialize database"""
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created successfully")
@@ -153,28 +130,43 @@ def get_db() -> Generator[Session, None, None]:
 
 def check_db_connection() -> bool:
     """Check if database connection is available"""
-    for attempt in range(MAX_RETRIES):
-        try:
-            logger.info(f"Attempting database connection (attempt {attempt + 1}/{MAX_RETRIES})")
-            logger.info(f"Using database URL: {DATABASE_URL}")
-            with engine.connect() as conn:
-                logger.info("Connection established, executing test query")
-                result = conn.execute(text("SELECT 1"))
-                logger.info(f"Test query result: {result.scalar()}")
-                return True
-        except OperationalError as e:
-            logger.error(f"Database operational error: {str(e)}")
-            if attempt < MAX_RETRIES - 1:
-                logger.warning(f"Retrying in {RETRY_DELAY} seconds...")
-                time.sleep(RETRY_DELAY)
-            else:
-                logger.error("All connection attempts failed")
-                return False
-        except Exception as e:
-            logger.error(f"Unexpected error during connection check: {str(e)}")
-            if attempt < MAX_RETRIES - 1:
-                logger.warning(f"Retrying in {RETRY_DELAY} seconds...")
-                time.sleep(RETRY_DELAY)
-            else:
-                logger.error("All connection attempts failed")
-                return False 
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT 1"))
+            return True
+    except Exception as e:
+        logger.error(f"Database connection check failed: {str(e)}")
+        return False
+
+def cosine_similarity(a: list, b: list) -> float:
+    """Calculate cosine similarity between two vectors"""
+    a = np.array(a)
+    b = np.array(b)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+def search_similar_embeddings(query_embedding: list, top_k: int = 5) -> List[dict]:
+    """Search for similar documents using cosine similarity"""
+    try:
+        with get_db_session() as session:
+            # Get all documents
+            documents = session.query(DocumentEmbedding).all()
+            
+            # Calculate similarities
+            similarities = []
+            for doc in documents:
+                doc_embedding = doc.get_embedding()
+                similarity = cosine_similarity(query_embedding, doc_embedding)
+                similarities.append({
+                    'id': doc.id,
+                    'text': doc.text,
+                    'metadata': doc.document_metadata,
+                    'similarity': similarity,
+                    'created_at': doc.created_at
+                })
+            
+            # Sort by similarity and get top_k
+            similarities.sort(key=lambda x: x['similarity'], reverse=True)
+            return similarities[:top_k]
+    except Exception as e:
+        logger.error(f"Error searching similar embeddings: {str(e)}")
+        raise DatabaseError(f"Error searching similar embeddings: {str(e)}") 

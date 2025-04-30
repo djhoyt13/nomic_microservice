@@ -135,12 +135,11 @@ async def create_embedding(document: Document):
 @app.post("/search")
 async def search_similar(query: Query):
     try:
-        # Validate input
-        if not query.text.strip():
-            raise ValidationError("Query text cannot be empty or whitespace")
-
-        # Generate query embedding
+        logger.info("Received search query")
+        
+        # Generate embedding for the query text
         try:
+            logger.info("Generating query embedding...")
             query_embedding = embeddings.embed_documents([query.text])[0]
             logger.info(f"Generated query embedding of shape: {len(query_embedding)}")
         except Exception as e:
@@ -152,7 +151,7 @@ async def search_similar(query: Query):
             response = requests.post(
                 f"{DB_SERVICE_URL}/search",
                 json={
-                    "embedding": query_embedding,
+                    "embedding": query_embedding.tolist(),  # Convert numpy array to list
                     "top_k": query.top_k
                 }
             )

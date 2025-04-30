@@ -3,11 +3,14 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any
-import numpy as np
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from .database import get_db, DocumentEmbedding, init_db, check_db_connection
 from .database import (
+    get_db,
+    DocumentEmbedding,
+    init_db,
+    check_db_connection,
+    search_similar_embeddings,
     DatabaseError,
     DatabaseConnectionError,
     DatabaseInitializationError,
@@ -19,6 +22,7 @@ import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
 import time
+import numpy as np
 
 # Configure logging
 logging.basicConfig(
@@ -38,13 +42,9 @@ class ValidationError(ServiceError):
     """Exception raised for validation errors"""
     pass
 
-class SearchError(ServiceError):
-    """Exception raised for search operation errors"""
-    pass
-
-# Data models with enhanced validation
+# Models
 class Document(BaseModel):
-    text: str = Field(..., min_length=1, max_length=10000)
+    text: str
     embedding: List[float]
     metadata: Optional[Dict[str, Any]] = None
 
@@ -56,7 +56,7 @@ class Document(BaseModel):
 
 class Query(BaseModel):
     embedding: List[float]
-    top_k: Optional[int] = Field(default=5, ge=1, le=100)
+    top_k: Optional[int] = 5
 
     @validator('embedding')
     def validate_embedding(cls, v):
@@ -71,31 +71,19 @@ class SearchResult(BaseModel):
     similarity: float
     created_at: str
 
-class ErrorResponse(BaseModel):
-    error: str
-    details: Optional[str] = None
-    timestamp: str
-
+# Application lifespan
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("Starting database service...")
-    logger.info(f"Database URL: {os.getenv('DATABASE_URL')}")
+    # Initialize database
     try:
         init_db()
         logger.info("Database initialized successfully")
-    except DatabaseInitializationError as e:
+    except Exception as e:
         logger.error(f"Failed to initialize database: {str(e)}")
         raise
-    except Exception as e:
-        logger.error(f"Unexpected error during startup: {str(e)}")
-        raise ServiceError(f"Unexpected error during startup: {str(e)}")
-    
     yield
-    
-    # Shutdown
-    logger.info("Shutting down database service...")
-    # Add any cleanup code here if needed
+    # Cleanup
+    logger.info("Shutting down application")
 
 app = FastAPI(
     title="Vector Database Service",
@@ -130,10 +118,9 @@ async def service_error_handler(request, exc: ServiceError):
 async def database_error_handler(request, exc: DatabaseError):
     logger.error(f"Database error: {str(exc)}")
     return JSONResponse(
-        status_code=503,
+        status_code=500,
         content={
-            "error": "Database service error",
-            "details": str(exc),
+            "error": str(exc),
             "type": exc.__class__.__name__,
             "timestamp": datetime.now().isoformat()
         }
@@ -145,24 +132,23 @@ async def validation_error_handler(request, exc: ValidationError):
     return JSONResponse(
         status_code=400,
         content={
-            "error": "Validation error",
-            "details": str(exc),
+            "error": str(exc),
             "type": exc.__class__.__name__,
             "timestamp": datetime.now().isoformat()
         }
     )
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc: HTTPException):
-    logger.error(f"HTTP error: {str(exc)}")
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": exc.detail,
-            "type": exc.__class__.__name__,
-            "timestamp": datetime.now().isoformat()
-        }
-    )
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Check service health"""
+    try:
+        if check_db_connection():
+            return {"status": "healthy", "database": "connected"}
+        return {"status": "unhealthy", "database": "disconnected"}
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return {"status": "unhealthy", "error": str(e)}
 
 @app.post("/store", response_model=Dict[str, Any])
 async def store_document(document: Document, db: Session = Depends(get_db)):
@@ -207,55 +193,16 @@ async def store_document(document: Document, db: Session = Depends(get_db)):
         raise ServiceError(f"Unexpected error while storing document: {str(e)}")
 
 @app.post("/search", response_model=List[SearchResult])
-async def search_similar(query: Query, db: Session = Depends(get_db)):
+async def search_similar(query: Query):
     try:
-        # Validate embedding dimensions
-        if len(query.embedding) != 768:
-            raise ValidationError("Embedding must be 768-dimensional")
-
-        # Search using PGVector
-        results = db.query(DocumentEmbedding).order_by(
-            DocumentEmbedding.embedding.cosine_distance(query.embedding)
-        ).limit(query.top_k).all()
-        
-        # Format results
-        formatted_results = []
-        for doc in results:
-            similarity = 1 - doc.embedding.cosine_distance(query.embedding)
-            formatted_results.append(SearchResult(
-                id=doc.id,
-                text=doc.text,
-                metadata=doc.metadata,
-                similarity=float(similarity),
-                created_at=doc.created_at
-            ))
-        
-        return formatted_results
+        # Search using SQLite implementation
+        results = search_similar_embeddings(query.embedding, query.top_k)
+        return results
     except ValidationError as e:
         raise
-    except SQLAlchemyError as e:
+    except DatabaseError as e:
         logger.error(f"Database error while searching: {str(e)}")
-        raise DatabaseError(f"Failed to search documents: {str(e)}")
+        raise
     except Exception as e:
         logger.error(f"Unexpected error while searching: {str(e)}")
-        raise ServiceError(f"Unexpected error while searching: {str(e)}")
-
-@app.get("/health", response_model=Dict[str, Any])
-async def health_check():
-    try:
-        # Check database connection
-        db_healthy = check_db_connection()
-        
-        return {
-            "status": "healthy" if db_healthy else "unhealthy",
-            "database": "connected" if db_healthy else "disconnected",
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {
-            "status": "unhealthy",
-            "database": "error",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        } 
+        raise ServiceError(f"Unexpected error while searching: {str(e)}") 

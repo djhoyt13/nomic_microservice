@@ -10,27 +10,16 @@ services:
       - DB_SERVICE_URL=http://db_service:8001
     depends_on:
       - db_service
-      - db
 
   db_service:
     build: ./db_service
     ports:
       - "8001:8001"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
-    depends_on:
-      - db
-
-  db:
-    image: ankane/pgvector:latest
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=embeddings
-    ports:
-      - "5433:5432"
+      - DB_DIR=/app/data
+      - DB_NAME=embeddings.db
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - db_data:/app/data
 
 volumes:
-  postgres_data: 
+  db_data: 
