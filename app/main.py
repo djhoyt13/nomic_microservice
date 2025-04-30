@@ -61,7 +61,11 @@ async def nomic_service_error_handler(request: Request, exc: NomicServiceError):
     logger.error(f"Nomic service error: {str(exc)}")
     return JSONResponse(
         status_code=500,
-        content={"error": str(exc), "timestamp": datetime.now(datetime.UTC).isoformat()}
+        content={
+            "error": str(exc),
+            "type": exc.__class__.__name__,
+            "timestamp": datetime.now().isoformat()
+        }
     )
 
 @app.exception_handler(ValidationError)
@@ -69,7 +73,11 @@ async def validation_error_handler(request: Request, exc: ValidationError):
     logger.warning(f"Validation error: {str(exc)}")
     return JSONResponse(
         status_code=400,
-        content={"error": str(exc), "timestamp": datetime.now(datetime.UTC).isoformat()}
+        content={
+            "error": str(exc),
+            "type": exc.__class__.__name__,
+            "timestamp": datetime.now().isoformat()
+        }
     )
 
 @app.exception_handler(requests.exceptions.RequestException)
@@ -80,19 +88,23 @@ async def request_exception_handler(request: Request, exc: requests.exceptions.R
         content={
             "error": "Database service is currently unavailable",
             "details": str(exc),
-            "timestamp": datetime.now(datetime.UTC).isoformat()
+            "type": exc.__class__.__name__,
+            "timestamp": datetime.now().isoformat()
         }
     )
 
 @app.post("/embed")
 async def create_embedding(document: Document):
     try:
+        logger.info("Received document for embedding")
         # Validate input
         if not document.text.strip():
             raise ValidationError("Document text cannot be empty or whitespace")
+        logger.info("Input validation successful")
 
         # Generate embedding using local Nomic model
         try:
+            logger.info("Generating embedding...")
             embedding = embeddings.embed_documents([document.text])[0]
             logger.info(f"Generated embedding of shape: {len(embedding)}")
         except Exception as e:
@@ -101,6 +113,7 @@ async def create_embedding(document: Document):
         
         # Store in database service
         try:
+            logger.info("Storing embedding in database service...")
             response = requests.post(
                 f"{DB_SERVICE_URL}/store",
                 json={
@@ -110,6 +123,7 @@ async def create_embedding(document: Document):
                 }
             )
             response.raise_for_status()
+            logger.info("Successfully stored embedding")
             return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to store embedding: {str(e)}")

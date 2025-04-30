@@ -9,7 +9,7 @@ import logging
 from typing import Generator, Optional
 from contextlib import contextmanager
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Configure logging
 logging.basicConfig(
@@ -100,7 +100,7 @@ class DocumentEmbedding(Base):
     text = Column(String, nullable=False)
     embedding = Column(Vector(768))  # Nomic embeddings are 768-dimensional
     document_metadata = Column(JSON)
-    created_at = Column(String, default=lambda: datetime.now(datetime.UTC).isoformat())
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Event listeners for connection management
 @event.listens_for(engine, "connect")
@@ -156,10 +156,11 @@ def check_db_connection() -> bool:
     for attempt in range(MAX_RETRIES):
         try:
             logger.info(f"Attempting database connection (attempt {attempt + 1}/{MAX_RETRIES})")
+            logger.info(f"Using database URL: {DATABASE_URL}")
             with engine.connect() as conn:
                 logger.info("Connection established, executing test query")
-                conn.execute(text("SELECT 1"))
-                logger.info("Test query executed successfully")
+                result = conn.execute(text("SELECT 1"))
+                logger.info(f"Test query result: {result.scalar()}")
                 return True
         except OperationalError as e:
             logger.error(f"Database operational error: {str(e)}")

@@ -80,6 +80,7 @@ class ErrorResponse(BaseModel):
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting database service...")
+    logger.info(f"Database URL: {os.getenv('DATABASE_URL')}")
     try:
         init_db()
         logger.info("Database initialized successfully")
@@ -117,35 +118,38 @@ app.add_middleware(
 async def service_error_handler(request, exc: ServiceError):
     logger.error(f"Service error: {str(exc)}")
     return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=ErrorResponse(
-            error=str(exc),
-            timestamp=datetime.now(datetime.UTC).isoformat()
-        ).dict()
+        status_code=500,
+        content={
+            "error": str(exc),
+            "type": exc.__class__.__name__,
+            "timestamp": datetime.now().isoformat()
+        }
     )
 
 @app.exception_handler(DatabaseError)
 async def database_error_handler(request, exc: DatabaseError):
     logger.error(f"Database error: {str(exc)}")
     return JSONResponse(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        content=ErrorResponse(
-            error="Database service error",
-            details=str(exc),
-            timestamp=datetime.now(datetime.UTC).isoformat()
-        ).dict()
+        status_code=503,
+        content={
+            "error": "Database service error",
+            "details": str(exc),
+            "type": exc.__class__.__name__,
+            "timestamp": datetime.now().isoformat()
+        }
     )
 
 @app.exception_handler(ValidationError)
 async def validation_error_handler(request, exc: ValidationError):
     logger.error(f"Validation error: {str(exc)}")
     return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content=ErrorResponse(
-            error="Validation error",
-            details=str(exc),
-            timestamp=datetime.now(datetime.UTC).isoformat()
-        ).dict()
+        status_code=400,
+        content={
+            "error": "Validation error",
+            "details": str(exc),
+            "type": exc.__class__.__name__,
+            "timestamp": datetime.now().isoformat()
+        }
     )
 
 @app.exception_handler(HTTPException)
@@ -153,28 +157,37 @@ async def http_exception_handler(request, exc: HTTPException):
     logger.error(f"HTTP error: {str(exc)}")
     return JSONResponse(
         status_code=exc.status_code,
-        content=ErrorResponse(
-            error=exc.detail,
-            timestamp=datetime.now(datetime.UTC).isoformat()
-        ).dict()
+        content={
+            "error": exc.detail,
+            "type": exc.__class__.__name__,
+            "timestamp": datetime.now().isoformat()
+        }
     )
 
 @app.post("/store", response_model=Dict[str, Any])
 async def store_document(document: Document, db: Session = Depends(get_db)):
     try:
+        logger.info("Received document for storage")
         # Validate embedding dimensions
         if len(document.embedding) != 768:
+            logger.error(f"Invalid embedding dimensions: {len(document.embedding)}")
             raise ValidationError("Embedding must be 768-dimensional")
+        logger.info("Embedding validation successful")
 
         # Store in database
+        logger.info("Creating database record")
         db_embedding = DocumentEmbedding(
             text=document.text,
             embedding=document.embedding,
             metadata=document.metadata
         )
+        logger.info("Adding record to session")
         db.add(db_embedding)
+        logger.info("Committing transaction")
         db.commit()
+        logger.info("Refreshing record")
         db.refresh(db_embedding)
+        logger.info("Document stored successfully")
             
         return {
             "id": db_embedding.id,
@@ -182,6 +195,7 @@ async def store_document(document: Document, db: Session = Depends(get_db)):
             "created_at": db_embedding.created_at
         }
     except ValidationError as e:
+        logger.error(f"Validation error: {str(e)}")
         raise
     except SQLAlchemyError as e:
         db.rollback()
