@@ -22,11 +22,18 @@ def test_nomic_api_key():
         'Content-Type': 'application/json'
     }
     
+    # Test payload
+    payload = {
+        "texts": ["Test text for API key validation"],
+        "model": "nomic-embed-text-v1"
+    }
+    
     try:
-        # Make a simple request to test the API key
-        response = requests.get(
+        # Make a POST request to test the API key
+        response = requests.post(
             'https://api-atlas.nomic.ai/v1/embedding/text',
-            headers=headers
+            headers=headers,
+            json=payload
         )
         
         if response.status_code == 200:
