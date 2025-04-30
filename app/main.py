@@ -25,7 +25,7 @@ app = FastAPI(title="Nomic Embedding Service")
 DB_SERVICE_URL = os.getenv("DB_SERVICE_URL", "http://db_service:8001")
 
 # Initialize the embedding model
-logger.info("Loading Nomic embedding model in local mode...")
+logger.info("Loading embedding model...")
 embeddings = NomicEmbeddings(model='nomic-embed-text-v1.5')
 logger.info("Model loaded successfully")
 
@@ -156,8 +156,6 @@ async def health_check():
     return {
         "status": "healthy",
         "model": "nomic-embed-text-v1.5",
-        "inference_mode": "local",
-        "device": "cpu",
         "embedding_dimension": 768,  # Nomic Embed v1.5 uses 768 dimensions
-        "timestamp": datetime.now(datetime.UTC).isoformat()
+        "timestamp": datetime.now().isoformat()
     } 

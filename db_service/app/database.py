@@ -45,18 +45,24 @@ RETRY_DELAY = 2  # seconds
 def create_db_engine():
     """Create database engine with retry logic and connection pooling"""
     try:
+        logger.info(f"Attempting to connect to database at {DATABASE_URL}")
         engine = create_engine(
             DATABASE_URL,
             pool_size=5,
             max_overflow=10,
             pool_timeout=30,
             pool_recycle=1800,
-            pool_pre_ping=True
+            pool_pre_ping=True,
+            connect_args={
+                "connect_timeout": 10,
+                "application_name": "db_service"
+            }
         )
         
         # Test the connection
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
+            logger.info("Database connection test successful")
             
         return engine
     except OperationalError as e:
@@ -71,9 +77,11 @@ engine = None
 for attempt in range(MAX_RETRIES):
     try:
         engine = create_db_engine()
+        logger.info("Database engine created successfully")
         break
     except DatabaseConnectionError as e:
         if attempt == MAX_RETRIES - 1:
+            logger.error("Failed to create database engine after all retry attempts")
             raise
         logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {RETRY_DELAY} seconds...")
         time.sleep(RETRY_DELAY)
@@ -145,10 +153,27 @@ def get_db() -> Generator[Session, None, None]:
 
 def check_db_connection() -> bool:
     """Check if database connection is available"""
-    try:
-        with engine.connect() as conn:
-            conn.execute("SELECT 1")
-        return True
-    except Exception as e:
-        logger.error(f"Database connection check failed: {str(e)}")
-        return False 
+    for attempt in range(MAX_RETRIES):
+        try:
+            logger.info(f"Attempting database connection (attempt {attempt + 1}/{MAX_RETRIES})")
+            with engine.connect() as conn:
+                logger.info("Connection established, executing test query")
+                conn.execute(text("SELECT 1"))
+                logger.info("Test query executed successfully")
+                return True
+        except OperationalError as e:
+            logger.error(f"Database operational error: {str(e)}")
+            if attempt < MAX_RETRIES - 1:
+                logger.warning(f"Retrying in {RETRY_DELAY} seconds...")
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error("All connection attempts failed")
+                return False
+        except Exception as e:
+            logger.error(f"Unexpected error during connection check: {str(e)}")
+            if attempt < MAX_RETRIES - 1:
+                logger.warning(f"Retrying in {RETRY_DELAY} seconds...")
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error("All connection attempts failed")
+                return False 

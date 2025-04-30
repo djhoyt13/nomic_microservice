@@ -235,7 +235,7 @@ async def health_check():
         return {
             "status": "healthy" if db_healthy else "unhealthy",
             "database": "connected" if db_healthy else "disconnected",
-            "timestamp": datetime.now(datetime.UTC).isoformat()
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
@@ -243,5 +243,5 @@ async def health_check():
             "status": "unhealthy",
             "database": "error",
             "error": str(e),
-            "timestamp": datetime.now(datetime.UTC).isoformat()
+            "timestamp": datetime.now().isoformat()
         } 
