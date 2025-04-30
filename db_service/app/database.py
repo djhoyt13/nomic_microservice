@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, JSON, event
+from sqlalchemy import create_engine, Column, Integer, String, JSON, event, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
@@ -56,7 +56,7 @@ def create_db_engine():
         
         # Test the connection
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.execute(text("SELECT 1"))
             
         return engine
     except OperationalError as e:
@@ -91,7 +91,7 @@ class DocumentEmbedding(Base):
     id = Column(Integer, primary_key=True, index=True)
     text = Column(String, nullable=False)
     embedding = Column(Vector(768))  # Nomic embeddings are 768-dimensional
-    metadata = Column(JSON)
+    document_metadata = Column(JSON)
     created_at = Column(String, default=lambda: datetime.now(datetime.UTC).isoformat())
 
 # Event listeners for connection management

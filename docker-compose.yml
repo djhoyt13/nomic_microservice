@@ -17,7 +17,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5433/embeddings
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
     depends_on:
       - db
 
