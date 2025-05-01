@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 import logging
 from datetime import datetime, timezone
 
+# Load environment variables
+load_dotenv()
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -18,7 +21,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Load configuration from environment variables
+MAX_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "10000"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "32"))
+MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "1000"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "100"))
 
 app = FastAPI(title="Nomic Embedding Service")
 
@@ -55,21 +62,16 @@ class DatabaseServiceError(NomicServiceError):
 
 # Data models with validation
 class Document(BaseModel):
-    text: str = Field(..., min_length=1, max_length=10000)
+    text: str = Field(..., min_length=1, max_length=MAX_LENGTH)
     metadata: Optional[dict] = None
 
 class BatchDocument(BaseModel):
-    texts: List[str] = Field(..., min_items=1, max_items=1000)
+    texts: List[str] = Field(..., min_items=1, max_items=MAX_LENGTH)
     metadata: Optional[dict] = None
 
 class Query(BaseModel):
-    text: str = Field(..., min_length=1, max_length=10000)
+    text: str = Field(..., min_length=1, max_length=MAX_LENGTH)
     top_k: Optional[int] = Field(default=5, ge=1, le=100)
-
-# Constants for batch processing
-BATCH_SIZE = 32  # Number of texts to process in parallel
-MAX_BATCH_SIZE = 1000  # Maximum number of texts in a single request
-CHUNK_SIZE = 100  # Number of texts to store in database at once
 
 def chunk_list(lst: List, size: int) -> List[List]:
     """Split a list into chunks of specified size"""
