@@ -101,12 +101,34 @@ class DocumentUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 class BatchDocumentUpdate(BaseModel):
-    document_ids: List[int] = Field(..., min_items=1)
-    text: Optional[str] = None
-    metadata: Optional[dict] = None
+    document_ids: List[int] = Field(..., min_items=1, max_items=1000, description="List of document IDs to update")
+    text: Optional[str] = Field(None, min_length=1, max_length=10000, description="New text content")
+    metadata: Optional[dict] = Field(None, description="New metadata to update")
+
+    @field_validator('document_ids')
+    @classmethod
+    def validate_document_ids(cls, v):
+        if not v:
+            raise ValueError("At least one document ID is required")
+        if len(v) > 1000:
+            raise ValueError("Cannot update more than 1000 documents at once")
+        if not all(isinstance(x, int) and x > 0 for x in v):
+            raise ValueError("All document IDs must be positive integers")
+        return v
 
 class BatchDocumentDelete(BaseModel):
-    document_ids: List[int] = Field(..., min_items=1)
+    document_ids: List[int] = Field(..., min_items=1, max_items=1000, description="List of document IDs to delete")
+
+    @field_validator('document_ids')
+    @classmethod
+    def validate_document_ids(cls, v):
+        if not v:
+            raise ValueError("At least one document ID is required")
+        if len(v) > 1000:
+            raise ValueError("Cannot delete more than 1000 documents at once")
+        if not all(isinstance(x, int) and x > 0 for x in v):
+            raise ValueError("All document IDs must be positive integers")
+        return v
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -326,40 +348,84 @@ async def health_check() -> Dict[str, str]:
 
 @app.delete("/documents/batch")
 async def delete_documents_batch(batch: BatchDocumentDelete, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """Delete multiple documents by IDs"""
+    """Delete multiple documents by IDs with enhanced validation and performance metrics"""
+    start_time = datetime.now(timezone.utc)
+    logger.info(f"Starting batch delete for {len(batch.document_ids)} documents")
+    
     try:
         # Get documents
         documents = db.query(DocumentEmbedding).filter(DocumentEmbedding.id.in_(batch.document_ids)).all()
         if not documents:
-            raise HTTPException(status_code=404, detail="No documents found with the provided IDs")
+            logger.warning(f"No documents found for IDs: {batch.document_ids}")
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "No documents found",
+                    "requested_ids": batch.document_ids,
+                    "found_ids": []
+                }
+            )
+        
+        # Log found documents
+        found_ids = [doc.id for doc in documents]
+        logger.info(f"Found {len(found_ids)} documents: {found_ids}")
         
         # Delete documents
         for document in documents:
             db.delete(document)
         db.commit()
         
+        # Calculate performance metrics
+        end_time = datetime.now(timezone.utc)
+        duration = (end_time - start_time).total_seconds()
+        docs_per_second = len(documents) / duration if duration > 0 else 0
+        
+        logger.info(f"Batch delete completed in {duration:.2f} seconds ({docs_per_second:.2f} docs/sec)")
+        
         return {
             "status": "success",
             "message": f"Successfully deleted {len(documents)} documents",
-            "deleted_ids": [doc.id for doc in documents]
+            "deleted_ids": [doc.id for doc in documents],
+            "performance": {
+                "duration_seconds": duration,
+                "documents_per_second": docs_per_second,
+                "total_documents": len(documents)
+            }
         }
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error while deleting documents: {str(e)}")
-        raise DatabaseError(f"Failed to delete documents: {str(e)}")
+        error_msg = f"Database error while deleting documents: {str(e)}"
+        logger.error(error_msg)
+        raise DatabaseError(error_msg)
     except Exception as e:
         db.rollback()
-        logger.error(f"Unexpected error while deleting documents: {str(e)}")
-        raise ServiceError(f"Unexpected error while deleting documents: {str(e)}")
+        error_msg = f"Unexpected error while deleting documents: {str(e)}"
+        logger.error(error_msg)
+        raise ServiceError(error_msg)
 
 @app.patch("/documents/batch")
 async def update_documents_batch(batch: BatchDocumentUpdate, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """Update multiple documents by IDs"""
+    """Update multiple documents by IDs with enhanced validation and performance metrics"""
+    start_time = datetime.now(timezone.utc)
+    logger.info(f"Starting batch update for {len(batch.document_ids)} documents")
+    
     try:
         # Get documents
         documents = db.query(DocumentEmbedding).filter(DocumentEmbedding.id.in_(batch.document_ids)).all()
         if not documents:
-            raise HTTPException(status_code=404, detail="No documents found with the provided IDs")
+            logger.warning(f"No documents found for IDs: {batch.document_ids}")
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "No documents found",
+                    "requested_ids": batch.document_ids,
+                    "found_ids": []
+                }
+            )
+        
+        # Log found documents
+        found_ids = [doc.id for doc in documents]
+        logger.info(f"Found {len(found_ids)} documents: {found_ids}")
         
         # Update documents
         updated_docs = []
@@ -372,19 +438,33 @@ async def update_documents_batch(batch: BatchDocumentUpdate, db: Session = Depen
         
         db.commit()
         
+        # Calculate performance metrics
+        end_time = datetime.now(timezone.utc)
+        duration = (end_time - start_time).total_seconds()
+        docs_per_second = len(updated_docs) / duration if duration > 0 else 0
+        
+        logger.info(f"Batch update completed in {duration:.2f} seconds ({docs_per_second:.2f} docs/sec)")
+        
         return {
             "status": "success",
             "message": f"Successfully updated {len(updated_docs)} documents",
-            "updated_ids": [doc.id for doc in updated_docs]
+            "updated_ids": [doc.id for doc in updated_docs],
+            "performance": {
+                "duration_seconds": duration,
+                "documents_per_second": docs_per_second,
+                "total_documents": len(updated_docs)
+            }
         }
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error while updating documents: {str(e)}")
-        raise DatabaseError(f"Failed to update documents: {str(e)}")
+        error_msg = f"Database error while updating documents: {str(e)}"
+        logger.error(error_msg)
+        raise DatabaseError(error_msg)
     except Exception as e:
         db.rollback()
-        logger.error(f"Unexpected error while updating documents: {str(e)}")
-        raise ServiceError(f"Unexpected error while updating documents: {str(e)}")
+        error_msg = f"Unexpected error while updating documents: {str(e)}"
+        logger.error(error_msg)
+        raise ServiceError(error_msg)
 
 @app.get("/documents/{document_id}")
 async def get_document(document_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:

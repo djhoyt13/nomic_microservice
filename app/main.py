@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import List, Optional
 import numpy as np
 from transformers import AutoTokenizer, AutoModel
@@ -198,12 +198,34 @@ class DocumentUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 class BatchDocumentUpdate(BaseModel):
-    document_ids: List[int] = Field(..., min_items=1)
-    text: Optional[str] = None
-    metadata: Optional[dict] = None
+    document_ids: List[int] = Field(..., min_items=1, max_items=1000, description="List of document IDs to update")
+    text: Optional[str] = Field(None, min_length=1, max_length=10000, description="New text content")
+    metadata: Optional[dict] = Field(None, description="New metadata to update")
+
+    @field_validator('document_ids')
+    @classmethod
+    def validate_document_ids(cls, v):
+        if not v:
+            raise ValueError("At least one document ID is required")
+        if len(v) > 1000:
+            raise ValueError("Cannot update more than 1000 documents at once")
+        if not all(isinstance(x, int) and x > 0 for x in v):
+            raise ValueError("All document IDs must be positive integers")
+        return v
 
 class BatchDocumentDelete(BaseModel):
-    document_ids: List[int] = Field(..., min_items=1)
+    document_ids: List[int] = Field(..., min_items=1, max_items=1000, description="List of document IDs to delete")
+
+    @field_validator('document_ids')
+    @classmethod
+    def validate_document_ids(cls, v):
+        if not v:
+            raise ValueError("At least one document ID is required")
+        if len(v) > 1000:
+            raise ValueError("Cannot delete more than 1000 documents at once")
+        if not all(isinstance(x, int) and x > 0 for x in v):
+            raise ValueError("All document IDs must be positive integers")
+        return v
 
 def chunk_list(lst: List, size: int, overlap: int = CHUNK_OVERLAP) -> List[List]:
     """Split a list into chunks of specified size with overlap"""
@@ -549,73 +571,135 @@ async def get_embedding_info():
 
 @app.delete("/documents/batch")
 async def delete_documents_batch(batch: BatchDocumentDelete):
-    """Delete multiple documents by IDs"""
+    """Delete multiple documents by IDs with enhanced validation and performance metrics"""
+    start_time = datetime.now(timezone.utc)
+    logger.info(f"Starting batch delete for {len(batch.document_ids)} documents")
+    
     try:
         # Delete documents from database service
         try:
             response = requests.delete(
                 f"{DB_SERVICE_URL}/documents/batch",
                 json=batch.model_dump(),
-                timeout=5
+                timeout=10  # Increased timeout for batch operations
             )
             
             if response.status_code == 404:
-                raise HTTPException(status_code=404, detail="No documents found with the provided IDs")
+                error_detail = response.json().get('detail', {})
+                logger.warning(f"No documents found for IDs: {batch.document_ids}")
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "No documents found",
+                        "requested_ids": batch.document_ids,
+                        "found_ids": error_detail.get('found_ids', [])
+                    }
+                )
             elif response.status_code != 200:
                 error_detail = response.json().get('detail', 'Unknown error')
                 logger.error(f"Database service error: {error_detail}")
                 raise DatabaseServiceError(f"Database service error: {error_detail}")
-                
-            return response.json()
+            
+            # Calculate performance metrics
+            end_time = datetime.now(timezone.utc)
+            duration = (end_time - start_time).total_seconds()
+            docs_per_second = len(batch.document_ids) / duration if duration > 0 else 0
+            
+            logger.info(f"Batch delete completed in {duration:.2f} seconds ({docs_per_second:.2f} docs/sec)")
+            
+            result = response.json()
+            result['performance'] = {
+                "duration_seconds": duration,
+                "documents_per_second": docs_per_second,
+                "total_documents": len(batch.document_ids)
+            }
+            return result
+            
         except requests.exceptions.Timeout:
-            logger.error("Database service request timed out")
-            raise DatabaseServiceError("Database service request timed out")
+            error_msg = "Database service request timed out"
+            logger.error(error_msg)
+            raise DatabaseServiceError(error_msg)
         except requests.exceptions.ConnectionError:
-            logger.error("Failed to connect to database service")
-            raise DatabaseServiceError("Failed to connect to database service")
+            error_msg = "Failed to connect to database service"
+            logger.error(error_msg)
+            raise DatabaseServiceError(error_msg)
             
     except ValidationError as e:
+        logger.error(f"Validation error: {str(e)}")
         raise
     except NomicServiceError as e:
+        logger.error(f"Nomic service error: {str(e)}")
         raise
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise NomicServiceError(f"Unexpected error: {str(e)}")
+        error_msg = f"Unexpected error: {str(e)}"
+        logger.error(error_msg)
+        raise NomicServiceError(error_msg)
 
 @app.patch("/documents/batch")
 async def update_documents_batch(batch: BatchDocumentUpdate):
-    """Update multiple documents by IDs"""
+    """Update multiple documents by IDs with enhanced validation and performance metrics"""
+    start_time = datetime.now(timezone.utc)
+    logger.info(f"Starting batch update for {len(batch.document_ids)} documents")
+    
     try:
         # Update documents in database service
         try:
             response = requests.patch(
                 f"{DB_SERVICE_URL}/documents/batch",
                 json=batch.model_dump(),
-                timeout=5
+                timeout=10  # Increased timeout for batch operations
             )
             
             if response.status_code == 404:
-                raise HTTPException(status_code=404, detail="No documents found with the provided IDs")
+                error_detail = response.json().get('detail', {})
+                logger.warning(f"No documents found for IDs: {batch.document_ids}")
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "No documents found",
+                        "requested_ids": batch.document_ids,
+                        "found_ids": error_detail.get('found_ids', [])
+                    }
+                )
             elif response.status_code != 200:
                 error_detail = response.json().get('detail', 'Unknown error')
                 logger.error(f"Database service error: {error_detail}")
                 raise DatabaseServiceError(f"Database service error: {error_detail}")
-                
-            return response.json()
+            
+            # Calculate performance metrics
+            end_time = datetime.now(timezone.utc)
+            duration = (end_time - start_time).total_seconds()
+            docs_per_second = len(batch.document_ids) / duration if duration > 0 else 0
+            
+            logger.info(f"Batch update completed in {duration:.2f} seconds ({docs_per_second:.2f} docs/sec)")
+            
+            result = response.json()
+            result['performance'] = {
+                "duration_seconds": duration,
+                "documents_per_second": docs_per_second,
+                "total_documents": len(batch.document_ids)
+            }
+            return result
+            
         except requests.exceptions.Timeout:
-            logger.error("Database service request timed out")
-            raise DatabaseServiceError("Database service request timed out")
+            error_msg = "Database service request timed out"
+            logger.error(error_msg)
+            raise DatabaseServiceError(error_msg)
         except requests.exceptions.ConnectionError:
-            logger.error("Failed to connect to database service")
-            raise DatabaseServiceError("Failed to connect to database service")
+            error_msg = "Failed to connect to database service"
+            logger.error(error_msg)
+            raise DatabaseServiceError(error_msg)
             
     except ValidationError as e:
+        logger.error(f"Validation error: {str(e)}")
         raise
     except NomicServiceError as e:
+        logger.error(f"Nomic service error: {str(e)}")
         raise
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise NomicServiceError(f"Unexpected error: {str(e)}")
+        error_msg = f"Unexpected error: {str(e)}"
+        logger.error(error_msg)
+        raise NomicServiceError(error_msg)
 
 @app.get("/documents/{document_id}")
 async def get_document(document_id: int):
