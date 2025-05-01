@@ -65,9 +65,42 @@ class Document(BaseModel):
     text: str = Field(..., min_length=1, max_length=MAX_LENGTH)
     metadata: Optional[dict] = None
 
+    def get_enhanced_metadata(self) -> dict:
+        """Enhance metadata with processing information"""
+        base_metadata = self.metadata or {}
+        return {
+            **base_metadata,
+            "processing_info": {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "model": "nomic-embed-text-v1.5",
+                "embedding_dimension": 768,
+                "source": base_metadata.get("source", "unknown"),
+                "chunk_index": 0,
+                "total_chunks": 1,
+                "document_classification": base_metadata.get("document_classification", "unknown")
+            }
+        }
+
 class BatchDocument(BaseModel):
     texts: List[str] = Field(..., min_items=1, max_items=MAX_LENGTH)
     metadata: Optional[dict] = None
+
+    def get_enhanced_metadata(self, chunk_index: int, total_chunks: int) -> dict:
+        """Enhance metadata with batch processing information"""
+        base_metadata = self.metadata or {}
+        return {
+            **base_metadata,
+            "processing_info": {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "model": "nomic-embed-text-v1.5",
+                "embedding_dimension": 768,
+                "source": base_metadata.get("source", "unknown"),
+                "batch_size": len(self.texts),
+                "chunk_index": chunk_index,
+                "total_chunks": total_chunks,
+                "document_classification": base_metadata.get("document_classification", "unknown")
+            }
+        }
 
 class Query(BaseModel):
     text: str = Field(..., min_length=1, max_length=MAX_LENGTH)
@@ -150,14 +183,14 @@ async def create_embedding(document: Document):
             logger.error(f"Failed to generate embedding: {str(e)}")
             raise EmbeddingError(f"Failed to generate embedding: {str(e)}")
         
-        # Store in database service
+        # Store in database service with enhanced metadata
         try:
             response = requests.post(
                 f"{DB_SERVICE_URL}/store",
                 json={
                     "text": document.text,
                     "embedding": embedding[0],
-                    "metadata": document.metadata
+                    "metadata": document.get_enhanced_metadata()
                 },
                 timeout=5
             )
@@ -195,21 +228,29 @@ async def create_embeddings_batch(batch: BatchDocument):
 
         # Process texts in batches
         results = []
+        total_chunks = (len(batch.texts) + BATCH_SIZE - 1) // BATCH_SIZE
+        
         for i in range(0, len(batch.texts), BATCH_SIZE):
             batch_texts = batch.texts[i:i + BATCH_SIZE]
+            chunk_index = i // BATCH_SIZE
+            
             try:
                 # Generate embeddings for the batch
                 embeddings = get_embeddings(batch_texts)
                 
-                # Store embeddings in chunks
-                batch_results = await store_embeddings_batch(batch_texts, embeddings, batch.metadata)
+                # Store embeddings in chunks with enhanced metadata
+                batch_results = await store_embeddings_batch(
+                    batch_texts, 
+                    embeddings, 
+                    batch.get_enhanced_metadata(chunk_index, total_chunks)
+                )
                 results.extend(batch_results)
                 
-                logger.info(f"Processed batch {i//BATCH_SIZE + 1} of {(len(batch.texts) + BATCH_SIZE - 1)//BATCH_SIZE}")
+                logger.info(f"Processed batch {chunk_index + 1} of {total_chunks}")
                 
             except Exception as e:
-                logger.error(f"Failed to process batch {i//BATCH_SIZE + 1}: {str(e)}")
-                raise EmbeddingError(f"Failed to process batch {i//BATCH_SIZE + 1}: {str(e)}")
+                logger.error(f"Failed to process batch {chunk_index + 1}: {str(e)}")
+                raise EmbeddingError(f"Failed to process batch {chunk_index + 1}: {str(e)}")
         
         return {
             "status": "success",
