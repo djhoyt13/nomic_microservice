@@ -33,10 +33,6 @@ class ValidationError(ServiceError):
     """Exception raised for validation errors"""
     pass
 
-class SearchError(ServiceError):
-    """Exception raised for search operation errors"""
-    pass
-
 # Data models with enhanced validation
 class Document(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000)
@@ -154,9 +150,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Document Embedding Service",
     description="Service for storing and searching document embeddings",
-    version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc",
     lifespan=lifespan
 )
 
@@ -168,12 +162,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Basic route for testing
-@app.get("/")
-async def root() -> Dict[str, str]:
-    """Root endpoint for service health check"""
-    return {"message": "Document Embedding Service is running"}
 
 # Error handlers
 @app.exception_handler(ServiceError)
