@@ -89,9 +89,9 @@ class DocumentEmbedding(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     text = Column(String, nullable=False)
-    embedding = Column(JSON)  # Store embeddings as JSON
-    doc_metadata = Column(JSON, default={})  # Store metadata as JSON
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    embedding = Column(JSON, nullable=False)  # Store as JSON array
+    doc_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc), nullable=False)
 
     def __init__(self, **kwargs):
         if 'metadata' in kwargs:

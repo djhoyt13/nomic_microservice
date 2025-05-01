@@ -40,8 +40,8 @@ class SearchError(ServiceError):
 # Data models with enhanced validation
 class Document(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000)
-    embedding: List[float]
-    metadata: Optional[Dict[str, Any]] = None
+    embedding: List[float] = Field(..., min_items=768, max_items=768)
+    metadata: Optional[dict] = None
 
     @field_validator('embedding')
     @classmethod
@@ -81,6 +81,20 @@ class ErrorResponse(BaseModel):
     error: str
     details: Optional[str] = None
     timestamp: str
+
+class BatchDocument(BaseModel):
+    texts: List[str] = Field(..., min_items=1, max_items=1000)
+    embeddings: List[List[float]] = Field(..., min_items=1, max_items=1000)
+    metadata: Optional[dict] = None
+
+    @field_validator('embeddings')
+    def validate_embeddings(cls, v, info):
+        if 'texts' in info.data and len(v) != len(info.data['texts']):
+            raise ValueError("Number of embeddings must match number of texts")
+        for emb in v:
+            if len(emb) != 768:
+                raise ValueError("Each embedding must be 768-dimensional")
+        return v
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -248,6 +262,37 @@ async def search_similar(query: Query, db: Session = Depends(get_db)) -> List[Se
     except Exception as e:
         logger.error(f"Unexpected error while searching: {str(e)}")
         raise ServiceError(f"Unexpected error while searching: {str(e)}")
+
+@app.post("/store_batch", response_model=List[Dict[str, Any]])
+async def store_documents_batch(batch: BatchDocument, db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
+    """Store multiple documents with their embeddings"""
+    try:
+        results = []
+        # Store in database
+        for text, embedding in zip(batch.texts, batch.embeddings):
+            db_embedding = DocumentEmbedding(
+                text=text,
+                embedding=embedding,
+                metadata=batch.metadata
+            )
+            db.add(db_embedding)
+            db.flush()  # Flush to get the ID and created_at
+            results.append({
+                "id": db_embedding.id,
+                "status": "success",
+                "created_at": db_embedding.created_at.isoformat()
+            })
+        
+        db.commit()
+        return results
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error while storing documents: {str(e)}")
+        raise DatabaseError(f"Failed to store documents: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error while storing documents: {str(e)}")
+        raise ServiceError(f"Unexpected error while storing documents: {str(e)}")
 
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
