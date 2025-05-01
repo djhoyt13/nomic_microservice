@@ -17,7 +17,36 @@ This project consists of two microservices:
 ```env
 # Database Service
 DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
+
+# Embedding Service Configuration
+MAX_TEXT_LENGTH=2048  # Maximum token length (model's context window)
+BATCH_SIZE=32         # Optimal batch size for processing
+MAX_BATCH_SIZE=1000   # Maximum number of texts per request
+CHUNK_SIZE=512        # Optimal chunk size for long documents
+CHUNK_OVERLAP=51      # 10% overlap between chunks (for context preservation)
 ```
+
+## Optimal Configuration
+
+The service is configured with optimal settings for the Nomic embedding model:
+
+1. Text Processing:
+   - Maximum text length: 2048 tokens (model's context window)
+   - Optimal chunk size: 512 tokens
+   - Chunk overlap: 51 tokens (10% of chunk size)
+   - Token-based chunking with natural boundary respect
+
+2. Batch Processing:
+   - Optimal batch size: 32 texts
+   - Maximum batch size: 1000 texts per request
+   - Automatic chunking for long documents
+   - Classification marking preservation
+
+3. Performance Considerations:
+   - Token-based length validation
+   - Efficient memory usage
+   - Context preservation through overlap
+   - Natural document boundary respect
 
 ## PostgreSQL Setup
 
