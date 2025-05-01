@@ -96,6 +96,18 @@ class BatchDocument(BaseModel):
                 raise ValueError("Each embedding must be 768-dimensional")
         return v
 
+class DocumentUpdate(BaseModel):
+    text: Optional[str] = None
+    metadata: Optional[dict] = None
+
+class BatchDocumentUpdate(BaseModel):
+    document_ids: List[int] = Field(..., min_items=1)
+    text: Optional[str] = None
+    metadata: Optional[dict] = None
+
+class BatchDocumentDelete(BaseModel):
+    document_ids: List[int] = Field(..., min_items=1)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown"""
@@ -310,4 +322,144 @@ async def health_check() -> Dict[str, str]:
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Health check failed with error: {str(e)}")
-        return {"status": "error", "message": str(e)} 
+        return {"status": "error", "message": str(e)}
+
+@app.delete("/documents/batch")
+async def delete_documents_batch(batch: BatchDocumentDelete, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Delete multiple documents by IDs"""
+    try:
+        # Get documents
+        documents = db.query(DocumentEmbedding).filter(DocumentEmbedding.id.in_(batch.document_ids)).all()
+        if not documents:
+            raise HTTPException(status_code=404, detail="No documents found with the provided IDs")
+        
+        # Delete documents
+        for document in documents:
+            db.delete(document)
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": f"Successfully deleted {len(documents)} documents",
+            "deleted_ids": [doc.id for doc in documents]
+        }
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error while deleting documents: {str(e)}")
+        raise DatabaseError(f"Failed to delete documents: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error while deleting documents: {str(e)}")
+        raise ServiceError(f"Unexpected error while deleting documents: {str(e)}")
+
+@app.patch("/documents/batch")
+async def update_documents_batch(batch: BatchDocumentUpdate, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Update multiple documents by IDs"""
+    try:
+        # Get documents
+        documents = db.query(DocumentEmbedding).filter(DocumentEmbedding.id.in_(batch.document_ids)).all()
+        if not documents:
+            raise HTTPException(status_code=404, detail="No documents found with the provided IDs")
+        
+        # Update documents
+        updated_docs = []
+        for document in documents:
+            if batch.text is not None:
+                document.text = batch.text
+            if batch.metadata is not None:
+                document.doc_metadata = batch.metadata
+            updated_docs.append(document)
+        
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": f"Successfully updated {len(updated_docs)} documents",
+            "updated_ids": [doc.id for doc in updated_docs]
+        }
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error while updating documents: {str(e)}")
+        raise DatabaseError(f"Failed to update documents: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error while updating documents: {str(e)}")
+        raise ServiceError(f"Unexpected error while updating documents: {str(e)}")
+
+@app.get("/documents/{document_id}")
+async def get_document(document_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Get a document by ID"""
+    try:
+        # Get document
+        document = db.query(DocumentEmbedding).filter(DocumentEmbedding.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        return {
+            "id": document.id,
+            "text": document.text,
+            "metadata": document.doc_metadata if document.doc_metadata is not None else {},
+            "created_at": document.created_at.isoformat()
+        }
+    except SQLAlchemyError as e:
+        logger.error(f"Database error while retrieving document: {str(e)}")
+        raise DatabaseError(f"Failed to retrieve document: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error while retrieving document: {str(e)}")
+        raise ServiceError(f"Unexpected error while retrieving document: {str(e)}")
+
+@app.patch("/documents/{document_id}")
+async def update_document(document_id: int, update: DocumentUpdate, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Update a document by ID"""
+    try:
+        # Get document
+        document = db.query(DocumentEmbedding).filter(DocumentEmbedding.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Update document
+        if update.text is not None:
+            document.text = update.text
+        if update.metadata is not None:
+            document.doc_metadata = update.metadata
+        
+        db.commit()
+        db.refresh(document)
+        
+        return {
+            "id": document.id,
+            "text": document.text,
+            "metadata": document.doc_metadata if document.doc_metadata is not None else {},
+            "created_at": document.created_at.isoformat()
+        }
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error while updating document: {str(e)}")
+        raise DatabaseError(f"Failed to update document: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error while updating document: {str(e)}")
+        raise ServiceError(f"Unexpected error while updating document: {str(e)}")
+
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Delete a document by ID"""
+    try:
+        # Get document
+        document = db.query(DocumentEmbedding).filter(DocumentEmbedding.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Delete document
+        db.delete(document)
+        db.commit()
+        
+        return {"status": "success", "message": f"Document {document_id} deleted successfully"}
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error while deleting document: {str(e)}")
+        raise DatabaseError(f"Failed to delete document: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error while deleting document: {str(e)}")
+        raise ServiceError(f"Unexpected error while deleting document: {str(e)}") 

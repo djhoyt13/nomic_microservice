@@ -193,6 +193,18 @@ class Query(BaseModel):
     text: str = Field(..., min_length=1, max_length=MAX_LENGTH)
     top_k: Optional[int] = Field(default=5, ge=1, le=100)
 
+class DocumentUpdate(BaseModel):
+    text: Optional[str] = Field(None, min_length=1, max_length=MAX_LENGTH)
+    metadata: Optional[dict] = None
+
+class BatchDocumentUpdate(BaseModel):
+    document_ids: List[int] = Field(..., min_items=1)
+    text: Optional[str] = None
+    metadata: Optional[dict] = None
+
+class BatchDocumentDelete(BaseModel):
+    document_ids: List[int] = Field(..., min_items=1)
+
 def chunk_list(lst: List, size: int, overlap: int = CHUNK_OVERLAP) -> List[List]:
     """Split a list into chunks of specified size with overlap"""
     if not lst:
@@ -341,6 +353,7 @@ async def request_exception_handler(request: Request, exc: requests.exceptions.R
         }
     )
 
+# Embed a single document
 @app.post("/embed")
 async def create_embedding(document: Document):
     try:
@@ -392,6 +405,7 @@ async def create_embedding(document: Document):
         logger.error(f"Unexpected error: {str(e)}")
         raise NomicServiceError(f"Unexpected error: {str(e)}")
 
+# Embed a batch of documents
 @app.post("/embed_batch")
 async def create_embeddings_batch(batch: BatchDocument):
     try:
@@ -531,4 +545,177 @@ async def get_embedding_info():
         "dimension": len(embedding),
         "sample_embedding": embedding[:5],  # Show first 5 values
         "model": "nomic-embed-text-v1.5"
-    } 
+    }
+
+@app.delete("/documents/batch")
+async def delete_documents_batch(batch: BatchDocumentDelete):
+    """Delete multiple documents by IDs"""
+    try:
+        # Delete documents from database service
+        try:
+            response = requests.delete(
+                f"{DB_SERVICE_URL}/documents/batch",
+                json=batch.model_dump(),
+                timeout=5
+            )
+            
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="No documents found with the provided IDs")
+            elif response.status_code != 200:
+                error_detail = response.json().get('detail', 'Unknown error')
+                logger.error(f"Database service error: {error_detail}")
+                raise DatabaseServiceError(f"Database service error: {error_detail}")
+                
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error("Database service request timed out")
+            raise DatabaseServiceError("Database service request timed out")
+        except requests.exceptions.ConnectionError:
+            logger.error("Failed to connect to database service")
+            raise DatabaseServiceError("Failed to connect to database service")
+            
+    except ValidationError as e:
+        raise
+    except NomicServiceError as e:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise NomicServiceError(f"Unexpected error: {str(e)}")
+
+@app.patch("/documents/batch")
+async def update_documents_batch(batch: BatchDocumentUpdate):
+    """Update multiple documents by IDs"""
+    try:
+        # Update documents in database service
+        try:
+            response = requests.patch(
+                f"{DB_SERVICE_URL}/documents/batch",
+                json=batch.model_dump(),
+                timeout=5
+            )
+            
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="No documents found with the provided IDs")
+            elif response.status_code != 200:
+                error_detail = response.json().get('detail', 'Unknown error')
+                logger.error(f"Database service error: {error_detail}")
+                raise DatabaseServiceError(f"Database service error: {error_detail}")
+                
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error("Database service request timed out")
+            raise DatabaseServiceError("Database service request timed out")
+        except requests.exceptions.ConnectionError:
+            logger.error("Failed to connect to database service")
+            raise DatabaseServiceError("Failed to connect to database service")
+            
+    except ValidationError as e:
+        raise
+    except NomicServiceError as e:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise NomicServiceError(f"Unexpected error: {str(e)}")
+
+@app.get("/documents/{document_id}")
+async def get_document(document_id: int):
+    """Get a document by ID"""
+    try:
+        # Get document from database service
+        try:
+            response = requests.get(
+                f"{DB_SERVICE_URL}/documents/{document_id}",
+                timeout=5
+            )
+            
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Document not found")
+            elif response.status_code != 200:
+                error_detail = response.json().get('detail', 'Unknown error')
+                logger.error(f"Database service error: {error_detail}")
+                raise DatabaseServiceError(f"Database service error: {error_detail}")
+                
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error("Database service request timed out")
+            raise DatabaseServiceError("Database service request timed out")
+        except requests.exceptions.ConnectionError:
+            logger.error("Failed to connect to database service")
+            raise DatabaseServiceError("Failed to connect to database service")
+            
+    except ValidationError as e:
+        raise
+    except NomicServiceError as e:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise NomicServiceError(f"Unexpected error: {str(e)}")
+
+@app.patch("/documents/{document_id}")
+async def update_document(document_id: int, update: DocumentUpdate):
+    """Update a document by ID"""
+    try:
+        # Update document in database service
+        try:
+            response = requests.patch(
+                f"{DB_SERVICE_URL}/documents/{document_id}",
+                json=update.model_dump(),
+                timeout=5
+            )
+            
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Document not found")
+            elif response.status_code != 200:
+                error_detail = response.json().get('detail', 'Unknown error')
+                logger.error(f"Database service error: {error_detail}")
+                raise DatabaseServiceError(f"Database service error: {error_detail}")
+                
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error("Database service request timed out")
+            raise DatabaseServiceError("Database service request timed out")
+        except requests.exceptions.ConnectionError:
+            logger.error("Failed to connect to database service")
+            raise DatabaseServiceError("Failed to connect to database service")
+            
+    except ValidationError as e:
+        raise
+    except NomicServiceError as e:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise NomicServiceError(f"Unexpected error: {str(e)}")
+
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: int):
+    """Delete a document by ID"""
+    try:
+        # Delete document from database service
+        try:
+            response = requests.delete(
+                f"{DB_SERVICE_URL}/documents/{document_id}",
+                timeout=5
+            )
+            
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Document not found")
+            elif response.status_code != 200:
+                error_detail = response.json().get('detail', 'Unknown error')
+                logger.error(f"Database service error: {error_detail}")
+                raise DatabaseServiceError(f"Database service error: {error_detail}")
+                
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error("Database service request timed out")
+            raise DatabaseServiceError("Database service request timed out")
+        except requests.exceptions.ConnectionError:
+            logger.error("Failed to connect to database service")
+            raise DatabaseServiceError("Failed to connect to database service")
+            
+    except ValidationError as e:
+        raise
+    except NomicServiceError as e:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise NomicServiceError(f"Unexpected error: {str(e)}") 
