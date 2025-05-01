@@ -8,7 +8,6 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - NOMIC_API_KEY=${NOMIC_API_KEY}
       - DB_SERVICE_URL=http://db_service:8001
     depends_on:
       - db_service
@@ -32,7 +31,7 @@ services:
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=embeddings
     ports:
-      - "5433:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 

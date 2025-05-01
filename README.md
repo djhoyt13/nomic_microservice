@@ -2,14 +2,13 @@
 
 This project consists of two microservices:
 1. Database Service - A FastAPI service for storing and searching document embeddings
-2. Embedding Service - A FastAPI service for generating embeddings using Nomic's embedding model
+2. Embedding Service - A FastAPI service for generating embeddings using a local Nomic embedding model
 
 ## Prerequisites
 
 - Python 3.8+
 - Docker and Docker Compose
 - PostgreSQL 13+ with pgvector extension
-- Nomic API key (for the embedding service)
 
 ## Environment Setup
 
@@ -18,9 +17,6 @@ This project consists of two microservices:
 ```env
 # Database Service
 DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
-
-# Embedding Service
-NOMIC_API_KEY=your_nomic_api_key
 ```
 
 ## PostgreSQL Setup
@@ -311,7 +307,7 @@ The database service provides endpoints for storing and searching document embed
 
 ## Embedding Service
 
-The embedding service generates embeddings using Nomic's embedding model.
+The embedding service generates embeddings using a local Nomic embedding model.
 
 ### Features
 - Generate embeddings for text documents
@@ -470,20 +466,27 @@ Logs are available through:
 
 ### Common Issues
 
-1. Database Connection Issues:
-   - Check DATABASE_URL configuration
-   - Verify PostgreSQL is running
-   - Check pgvector extension is installed
+1. Environment Variables:
+   - Check if `.env` file exists and is properly formatted
+   - Verify DATABASE_URL is correctly set
+   - Ensure environment variables are being loaded
 
-2. API Key Issues:
-   - Verify NOMIC_API_KEY is set
-   - Check API key permissions
-   - Monitor rate limits
+2. Database Connection Issues:
+   - Check if PostgreSQL is running
+   - Verify port availability
+   - Test database connection string
+   - Ensure pgvector extension is installed
 
-3. Service Health:
-   - Use health check endpoints
-   - Check service logs
-   - Monitor resource usage
+3. Model Loading Issues:
+   - Check if required model dependencies are installed
+   - Verify disk space for model downloads
+   - Check network connectivity for initial model download
+
+4. Security Best Practices:
+   - Store sensitive information in environment variables
+   - Never commit sensitive information to version control
+   - Use appropriate file permissions
+   - Follow security guidelines for production deployments
 
 ### Getting Help
 

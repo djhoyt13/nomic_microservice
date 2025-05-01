@@ -3,12 +3,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional
 import numpy as np
-from nomic import embed
+from transformers import AutoTokenizer, AutoModel
+import torch
 import requests
 import os
 from dotenv import load_dotenv
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +25,21 @@ app = FastAPI(title="Nomic Embedding Service")
 # Database service URL
 DB_SERVICE_URL = os.getenv("DB_SERVICE_URL", "http://db_service:8001")
 
+# Initialize the embedding model
+logger.info("Loading embedding model...")
+model_name = "nomic-ai/nomic-embed-text-v1.5"
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+logger.info("Model loaded successfully")
+
+def get_embeddings(texts: List[str]) -> List[List[float]]:
+    """Generate embeddings for a list of texts using the local model"""
+    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
+    with torch.no_grad():
+        outputs = model(**inputs)
+    embeddings = outputs.last_hidden_state.mean(dim=1).numpy().tolist()
+    return embeddings
+
 # Custom exceptions
 class NomicServiceError(Exception):
     """Base exception for Nomic service errors"""
@@ -35,10 +51,6 @@ class EmbeddingError(NomicServiceError):
 
 class DatabaseServiceError(NomicServiceError):
     """Exception raised for errors in database service communication"""
-    pass
-
-class ValidationError(NomicServiceError):
-    """Exception raised for input validation errors"""
     pass
 
 # Data models with validation
@@ -56,7 +68,7 @@ async def nomic_service_error_handler(request: Request, exc: NomicServiceError):
     logger.error(f"Nomic service error: {str(exc)}")
     return JSONResponse(
         status_code=500,
-        content={"error": str(exc), "timestamp": datetime.now(datetime.UTC).isoformat()}
+        content={"error": str(exc), "timestamp": datetime.now(timezone.utc).isoformat()}
     )
 
 @app.exception_handler(ValidationError)
@@ -64,7 +76,7 @@ async def validation_error_handler(request: Request, exc: ValidationError):
     logger.warning(f"Validation error: {str(exc)}")
     return JSONResponse(
         status_code=400,
-        content={"error": str(exc), "timestamp": datetime.now(datetime.UTC).isoformat()}
+        content={"error": str(exc), "timestamp": datetime.now(timezone.utc).isoformat()}
     )
 
 @app.exception_handler(requests.exceptions.RequestException)
@@ -75,7 +87,7 @@ async def request_exception_handler(request: Request, exc: requests.exceptions.R
         content={
             "error": "Database service is currently unavailable",
             "details": str(exc),
-            "timestamp": datetime.now(datetime.UTC).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
     )
 
@@ -88,10 +100,7 @@ async def create_embedding(document: Document):
 
         # Generate embedding using Nomic
         try:
-            embedding = embed.text(
-                texts=[document.text],
-                model='nomic-embed-text-v1'
-            )
+            embedding = get_embeddings([document.text])
         except Exception as e:
             logger.error(f"Failed to generate embedding: {str(e)}")
             raise EmbeddingError(f"Failed to generate embedding: {str(e)}")
@@ -102,7 +111,7 @@ async def create_embedding(document: Document):
                 f"{DB_SERVICE_URL}/store",
                 json={
                     "text": document.text,
-                    "embedding": embedding.tolist()[0],
+                    "embedding": embedding[0],
                     "metadata": document.metadata
                 },
                 timeout=5  # Add timeout for database service calls
@@ -138,10 +147,7 @@ async def search_similar(query: Query):
 
         # Generate query embedding
         try:
-            query_embedding = embed.text(
-                texts=[query.text],
-                model='nomic-embed-text-v1'
-            )
+            query_embedding = get_embeddings([query.text])
         except Exception as e:
             logger.error(f"Failed to generate query embedding: {str(e)}")
             raise EmbeddingError(f"Failed to generate query embedding: {str(e)}")
@@ -151,7 +157,7 @@ async def search_similar(query: Query):
             response = requests.post(
                 f"{DB_SERVICE_URL}/search",
                 json={
-                    "embedding": query_embedding.tolist()[0],
+                    "embedding": query_embedding[0],
                     "top_k": query.top_k
                 },
                 timeout=5  # Add timeout for database service calls
@@ -189,14 +195,16 @@ async def health_check():
                 content={
                     "status": "unhealthy",
                     "database_service": "unavailable",
-                    "timestamp": datetime.now(datetime.UTC).isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             )
         
         return {
             "status": "healthy",
+            "model": "nomic-embed-text-v1.5",
+            "embedding_dimension": 768,
             "database_service": "available",
-            "timestamp": datetime.now(datetime.UTC).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
@@ -206,6 +214,17 @@ async def health_check():
                 "status": "unhealthy",
                 "database_service": "unavailable",
                 "error": str(e),
-                "timestamp": datetime.now(datetime.UTC).isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
-        ) 
+        )
+
+@app.get("/embedding_info")
+async def get_embedding_info():
+    """Debug endpoint to check embedding dimensions"""
+    test_text = "This is a test"
+    embedding = get_embeddings([test_text])[0]
+    return {
+        "dimension": len(embedding),
+        "sample_embedding": embedding[:5],  # Show first 5 values
+        "model": "nomic-embed-text-v1.5"
+    } 
