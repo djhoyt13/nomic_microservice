@@ -9,19 +9,44 @@ import numpy as np
 from datetime import datetime, timezone
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from fastapi import FastAPI, HTTPException, Request
+from contextlib import asynccontextmanager
 from app.models import NomicServiceError
 from dotenv import load_dotenv
-from fastapi import HTTPException, Request
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Database configuration
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is not set")
+
+# Logging configuration
+def configure_logging():
+    """Configure logging for the application"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    return logging.getLogger(__name__)
+
+# Create logger
+logger = configure_logging()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
+    try:
+        init_model()
+        logger.info("Model initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize model: {str(e)}")
+        raise
+    yield
+    # Shutdown
+    logger.info("Shutting down application...")
 
 # Constants
 MODEL_NAME = "nomic-ai/nomic-embed-text-v1"

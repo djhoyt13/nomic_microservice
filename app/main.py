@@ -6,12 +6,11 @@ import numpy as np
 from transformers import AutoTokenizer, AutoModel
 import torch
 import requests
-import os
-from dotenv import load_dotenv
 import logging
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+from contextlib import asynccontextmanager
 
 from .models import (
     NomicServiceError,
@@ -39,43 +38,26 @@ from .funcs import (
     MAX_BATCH_SIZE,
     nomic_service_error_handler,
     validation_error_handler,
-    request_exception_handler
+    request_exception_handler,
+    DATABASE_URL,
+    configure_logging,
+    lifespan
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Load environment variables
-load_dotenv()
-
-# Initialize FastAPI app
-app = FastAPI()
-
-# Database configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@db:5432/embeddings")
+# Create logger
+logger = configure_logging()
 
 # Create async engine and session
 engine = create_async_engine(DATABASE_URL)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
+# Initialize FastAPI app with lifespan
+app = FastAPI(lifespan=lifespan)
+
 # Error handlers
 app.exception_handler(NomicServiceError)(nomic_service_error_handler)
 app.exception_handler(ValidationError)(validation_error_handler)
 app.exception_handler(requests.exceptions.RequestException)(request_exception_handler)
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the model on startup"""
-    try:
-        init_model()
-        logger.info("Model initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize model: {str(e)}")
-        raise
 
 # Health and Monitoring Endpoints
 @app.get("/health")

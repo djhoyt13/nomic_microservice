@@ -128,7 +128,7 @@ class BatchDocumentDelete(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager for startup and shutdown"""
+    """Lifespan event handler for startup and shutdown"""
     # Startup
     logger.info("Starting database service...")
     try:
@@ -140,13 +140,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Unexpected error during startup: {str(e)}")
         raise ServiceError(f"Unexpected error during startup: {str(e)}")
-    
     yield
-    
     # Shutdown
     logger.info("Shutting down database service...")
 
-# Create FastAPI app
+# Create FastAPI app with lifespan
 app = FastAPI(
     title="Document Embedding Service",
     description="Service for storing and searching document embeddings",
