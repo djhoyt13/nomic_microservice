@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import numpy as np
 from transformers import AutoTokenizer, AutoModel
 import torch
@@ -10,6 +10,8 @@ import os
 from dotenv import load_dotenv
 import logging
 from datetime import datetime, timezone
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
 
 from .models import (
     NomicServiceError,
@@ -24,222 +26,164 @@ from .models import (
 )
 
 from .funcs import (
+    init_model,
     validate_token_length,
     get_embeddings,
-    chunk_list,
     store_embeddings_batch,
-    initialize_model,
-    configure_logging,
-    nomic_service_error_handler,
-    validation_error_handler,
-    request_exception_handler,
-    tokenizer,
-    model,
+    search_similar,
+    MODEL_NAME,
     MAX_LENGTH,
     BATCH_SIZE,
+    DB_SERVICE_URL,
     CHUNK_SIZE,
     MAX_BATCH_SIZE,
-    DB_SERVICE_URL
+    nomic_service_error_handler,
+    validation_error_handler,
+    request_exception_handler
 )
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-logger = configure_logging()
+# Initialize FastAPI app
+app = FastAPI()
 
-app = FastAPI(title="Nomic Embedding Service")
+# Database configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@db:5432/embeddings")
 
-# Initialize the model
-tokenizer, model = initialize_model()
+# Create async engine and session
+engine = create_async_engine(DATABASE_URL)
+async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # Error handlers
 app.exception_handler(NomicServiceError)(nomic_service_error_handler)
 app.exception_handler(ValidationError)(validation_error_handler)
 app.exception_handler(requests.exceptions.RequestException)(request_exception_handler)
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the model on startup"""
+    try:
+        init_model()
+        logger.info("Model initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize model: {str(e)}")
+        raise
+
 # Health and Monitoring Endpoints
 @app.get("/health")
 async def health_check():
+    """Check the health of the service and its dependencies"""
     try:
         # Check database service health
-        response = requests.get(f"{DB_SERVICE_URL}/health", timeout=2)
-        if response.status_code != 200:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "unhealthy",
-                    "database_service": "unavailable",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
+        db_response = requests.get(f"{DB_SERVICE_URL}/health")
+        db_response.raise_for_status()
+        db_status = db_response.json()
         
         return {
             "status": "healthy",
-            "model": "nomic-embed-text-v1.5",
-            "embedding_dimension": 768,
-            "database_service": "available",
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "model": MODEL_NAME,
+            "max_length": MAX_LENGTH,
+            "batch_size": BATCH_SIZE,
+            "db_service": db_status
         }
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Database service health check failed: {str(e)}")
+        raise DatabaseServiceError(detail=f"Database service health check failed: {str(e)}")
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unhealthy",
-                "database_service": "unavailable",
-                "error": str(e),
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        )
+        raise NomicServiceError(detail=f"Health check failed: {str(e)}")
 
 # Embedding Endpoints   
 @app.post("/embed")
 async def create_embedding(document: Document):
+    """Create an embedding for a single document"""
     try:
-        # Validate input
-        if not document.text.strip():
-            raise ValidationError("Document text cannot be empty or whitespace")
-        
         # Validate token length
         if not validate_token_length(document.text):
-            raise ValidationError(f"Document text exceeds maximum token length of {MAX_LENGTH}")
-
-        # Generate embedding using Nomic
-        try:
-            embedding = get_embeddings([document.text])
-        except Exception as e:
-            logger.error(f"Failed to generate embedding: {str(e)}")
-            raise EmbeddingError(f"Failed to generate embedding: {str(e)}")
+            raise EmbeddingError(detail=f"Text exceeds maximum token length of {MAX_LENGTH}")
         
-        # Store in database service with enhanced metadata
-        try:
-            response = requests.post(
-                f"{DB_SERVICE_URL}/store",
-                json={
-                    "text": document.text,
-                    "embedding": embedding[0],
-                    "metadata": document.get_enhanced_metadata()
-                },
-                timeout=5
-            )
-            
-            if response.status_code != 200:
-                error_detail = response.json().get('detail', 'Unknown error')
-                logger.error(f"Database service error: {error_detail}")
-                raise DatabaseServiceError(f"Database service error: {error_detail}")
-                
-            return response.json()
-        except requests.exceptions.Timeout:
-            logger.error("Database service request timed out")
-            raise DatabaseServiceError("Database service request timed out")
-        except requests.exceptions.ConnectionError:
-            logger.error("Failed to connect to database service")
-            raise DatabaseServiceError("Failed to connect to database service")
-            
-    except ValidationError as e:
-        raise
-    except NomicServiceError as e:
-        raise
+        # Generate embedding
+        embeddings = get_embeddings([document.text])
+        if not embeddings:
+            raise EmbeddingError(detail="Failed to generate embedding")
+        
+        # Store embedding
+        success, message = store_embeddings_batch(
+            texts=[document.text],
+            metadata=document.metadata
+        )
+        
+        if not success:
+            raise DatabaseServiceError(detail=message)
+        
+        return {"status": "success", "message": message}
+    except (NomicServiceError, EmbeddingError, DatabaseServiceError) as e:
+        raise e
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise NomicServiceError(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error while creating embedding: {str(e)}")
+        raise NomicServiceError(detail=f"Unexpected error while creating embedding: {str(e)}")
 
 @app.post("/embed_batch")
-async def create_embeddings_batch(batch: BatchDocument):
+async def create_embeddings_batch(documents: BatchDocument):
+    """Create embeddings for multiple documents"""
     try:
-        # Validate input
-        if not all(text.strip() for text in batch.texts):
-            raise ValidationError("Document texts cannot be empty or whitespace")
+        # Validate token lengths
+        for text in documents.texts:
+            if not validate_token_length(text):
+                raise EmbeddingError(detail=f"Text exceeds maximum token length of {MAX_LENGTH}")
         
-        if len(batch.texts) > MAX_BATCH_SIZE:
-            raise ValidationError(f"Batch size exceeds maximum of {MAX_BATCH_SIZE} texts")
-
-        # Process texts in batches
-        results = []
-        total_chunks = (len(batch.texts) + BATCH_SIZE - 1) // BATCH_SIZE
+        # Generate embeddings
+        embeddings = get_embeddings(documents.texts)
+        if not embeddings:
+            raise EmbeddingError(detail="Failed to generate embeddings")
         
-        for i in range(0, len(batch.texts), BATCH_SIZE):
-            batch_texts = batch.texts[i:i + BATCH_SIZE]
-            chunk_index = i // BATCH_SIZE
-            
-            try:
-                # Generate embeddings for the batch
-                embeddings = get_embeddings(batch_texts)
-                
-                # Store embeddings in chunks with enhanced metadata
-                batch_results = await store_embeddings_batch(
-                    batch_texts, 
-                    embeddings, 
-                    batch.get_enhanced_metadata(chunk_index, total_chunks)
-                )
-                results.extend(batch_results)
-                
-                logger.info(f"Processed batch {chunk_index + 1} of {total_chunks}")
-                
-            except Exception as e:
-                logger.error(f"Failed to process batch {chunk_index + 1}: {str(e)}")
-                raise EmbeddingError(f"Failed to process batch {chunk_index + 1}: {str(e)}")
+        # Store embeddings
+        success, message = store_embeddings_batch(
+            texts=documents.texts,
+            metadata=documents.metadata
+        )
         
-        return {
-            "status": "success",
-            "processed_count": len(results),
-            "results": results
-        }
-            
-    except ValidationError as e:
-        raise
-    except NomicServiceError as e:
-        raise
+        if not success:
+            raise DatabaseServiceError(detail=message)
+        
+        return {"status": "success", "message": message}
+    except (NomicServiceError, EmbeddingError, DatabaseServiceError) as e:
+        raise e
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise NomicServiceError(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error while creating embeddings batch: {str(e)}")
+        raise NomicServiceError(detail=f"Unexpected error while creating embeddings batch: {str(e)}")
 
 @app.post("/search")
-async def search_similar(query: Query):
+async def search_documents(query: Query):
+    """Search for similar documents"""
     try:
-        # Validate input
-        if not query.text.strip():
-            raise ValidationError("Query text cannot be empty or whitespace")
-
-        # Generate query embedding
-        try:
-            query_embedding = get_embeddings([query.text])
-        except Exception as e:
-            logger.error(f"Failed to generate query embedding: {str(e)}")
-            raise EmbeddingError(f"Failed to generate query embedding: {str(e)}")
+        # Validate token length
+        if not validate_token_length(query.text):
+            raise EmbeddingError(detail=f"Query text exceeds maximum token length of {MAX_LENGTH}")
         
-        # Search in database service
-        try:
-            response = requests.post(
-                f"{DB_SERVICE_URL}/search",
-                json={
-                    "embedding": query_embedding[0],
-                    "top_k": query.top_k
-                },
-                timeout=5
-            )
-            
-            if response.status_code != 200:
-                error_detail = response.json().get('detail', 'Unknown error')
-                logger.error(f"Database service error: {error_detail}")
-                raise DatabaseServiceError(f"Database service error: {error_detail}")
-                
-            return response.json()
-        except requests.exceptions.Timeout:
-            logger.error("Database service request timed out")
-            raise DatabaseServiceError("Database service request timed out")
-        except requests.exceptions.ConnectionError:
-            logger.error("Failed to connect to database service")
-            raise DatabaseServiceError("Failed to connect to database service")
-            
-    except ValidationError as e:
-        raise
-    except NomicServiceError as e:
-        raise
+        # Search for similar documents
+        success, results, message = search_similar(
+            query_text=query.text,
+            limit=query.limit
+        )
+        
+        if not success:
+            raise DatabaseServiceError(detail=message)
+        
+        return {"status": "success", "results": results}
+    except (NomicServiceError, EmbeddingError, DatabaseServiceError) as e:
+        raise e
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise NomicServiceError(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error while searching documents: {str(e)}")
+        raise NomicServiceError(detail=f"Unexpected error while searching documents: {str(e)}")
 
 # Document Management Endpoints
 @app.patch("/documents/batch")
@@ -475,4 +419,21 @@ async def delete_document(document_id: int):
         raise
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        raise NomicServiceError(f"Unexpected error: {str(e)}") 
+        raise NomicServiceError(f"Unexpected error: {str(e)}")
+
+@app.get("/documents")
+async def list_documents(skip: int = 0, limit: int = 10):
+    """List documents with pagination"""
+    try:
+        response = requests.get(
+            f"{DB_SERVICE_URL}/documents",
+            params={"skip": skip, "limit": limit}
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to list documents: {str(e)}")
+        raise DatabaseServiceError(detail=f"Failed to list documents: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error while listing documents: {str(e)}")
+        raise NomicServiceError(detail=f"Unexpected error while listing documents: {str(e)}") 

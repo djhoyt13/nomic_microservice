@@ -1,13 +1,18 @@
-from sqlalchemy import create_engine, Column, Integer, String, JSON, text, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Float, ARRAY, text
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import os
+from dotenv import load_dotenv
 import logging
 from typing import Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import time
+
+# Constants for retry logic
+MAX_RETRIES = 5
+RETRY_DELAY = 2  # seconds
 
 # Configure logging
 logging.basicConfig(
@@ -15,6 +20,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
 
 # Custom exceptions
 class DatabaseError(Exception):
@@ -34,56 +42,23 @@ class DatabaseSessionError(DatabaseError):
     pass
 
 # Database configuration
-DB_DIR = os.path.join(os.getcwd(), "db_service", "data")
-DB_FILE = os.path.join(DB_DIR, "embeddings.db")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
+DB_HOST = os.getenv("DB_HOST", "db")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "postgres")
 
-# Create database directory if it doesn't exist
-if not os.path.exists(DB_DIR):
-    os.makedirs(DB_DIR)
+# Create database engine
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+engine = create_engine(DATABASE_URL)
 
-DATABASE_URL = f"sqlite:///{DB_FILE}"
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
-
-def create_db_engine():
-    """Create database engine with retry logic"""
-    try:
-        engine = create_engine(
-            DATABASE_URL,
-            connect_args={"check_same_thread": False}  # Required for SQLite
-        )
-        
-        # Test the connection
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-            
-        return engine
-    except OperationalError as e:
-        logger.error(f"Failed to connect to database: {str(e)}")
-        raise DatabaseConnectionError(f"Failed to connect to database: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error creating database engine: {str(e)}")
-        raise DatabaseError(f"Unexpected error creating database engine: {str(e)}")
-
-# Create SQLAlchemy engine with retry logic
-engine = None
-for attempt in range(MAX_RETRIES):
-    try:
-        engine = create_db_engine()
-        break
-    except DatabaseConnectionError as e:
-        if attempt == MAX_RETRIES - 1:
-            raise
-        logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {RETRY_DELAY} seconds...")
-        time.sleep(RETRY_DELAY)
-
-if not engine:
-    raise DatabaseConnectionError("Failed to create database engine after multiple attempts")
-
+# Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Create base class for models
 Base = declarative_base()
 
+# Define DocumentEmbedding model
 class DocumentEmbedding(Base):
     __tablename__ = "document_embeddings"
 
@@ -114,21 +89,13 @@ class DocumentEmbedding(Base):
         }
 
 def init_db():
-    """Initialize database with error handling"""
+    """Initialize the database by creating all tables"""
     try:
-        # Create database directory if it doesn't exist
-        db_dir = os.path.dirname(DB_FILE)
-        if not os.path.exists(db_dir):
-            os.makedirs(db_dir)
-            
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created successfully")
-    except SQLAlchemyError as e:
-        logger.error(f"Failed to create database tables: {str(e)}")
-        raise DatabaseInitializationError(f"Failed to create database tables: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error during database initialization: {str(e)}")
-        raise DatabaseError(f"Unexpected error during database initialization: {str(e)}")
+        logger.error(f"Failed to create database tables: {str(e)}")
+        raise DatabaseError(f"Failed to create database tables: {str(e)}")
 
 @contextmanager
 def get_db_session() -> Generator[Session, None, None]:
@@ -158,13 +125,6 @@ def check_db_connection() -> bool:
     """Check if database connection is available"""
     try:
         logger.info("Starting database connection check...")
-        # Create database file if it doesn't exist
-        if not os.path.exists(DB_FILE):
-            logger.info(f"Database file does not exist at {DB_FILE}, creating it...")
-            init_db()
-            logger.info("Database file created successfully")
-            
-        logger.info("Testing database connection...")
         with engine.connect() as conn:
             result = conn.execute(text("SELECT 1")).fetchone()
             logger.info(f"Database connection test successful: {result}")

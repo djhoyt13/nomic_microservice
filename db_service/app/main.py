@@ -456,25 +456,45 @@ async def update_documents_batch(batch: BatchDocumentUpdate, db: Session = Depen
 
 @app.get("/documents/{document_id}")
 async def get_document(document_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """Get a document by ID"""
+    """Get a specific document by ID"""
     try:
-        # Get document
         document = db.query(DocumentEmbedding).filter(DocumentEmbedding.id == document_id).first()
         if not document:
-            raise HTTPException(status_code=404, detail="Document not found")
-        
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "Document not found",
+                    "document_id": document_id
+                }
+            )
         return {
-            "id": document.id,
-            "text": document.text,
-            "metadata": document.doc_metadata if document.doc_metadata is not None else {},
-            "created_at": document.created_at.isoformat()
+            "status": "success",
+            "document": document.to_dict()
         }
     except SQLAlchemyError as e:
-        logger.error(f"Database error while retrieving document: {str(e)}")
-        raise DatabaseError(f"Failed to retrieve document: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error while retrieving document: {str(e)}")
-        raise ServiceError(f"Unexpected error while retrieving document: {str(e)}")
+        error_msg = f"Database error while getting document: {str(e)}"
+        logger.error(error_msg)
+        raise DatabaseError(error_msg)
+
+@app.get("/documents")
+async def list_documents(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """List all documents with pagination"""
+    try:
+        documents = db.query(DocumentEmbedding).offset(skip).limit(limit).all()
+        total = db.query(DocumentEmbedding).count()
+        return {
+            "status": "success",
+            "documents": [doc.to_dict() for doc in documents],
+            "pagination": {
+                "skip": skip,
+                "limit": limit,
+                "total": total
+            }
+        }
+    except SQLAlchemyError as e:
+        error_msg = f"Database error while listing documents: {str(e)}"
+        logger.error(error_msg)
+        raise DatabaseError(error_msg)
 
 @app.patch("/documents/{document_id}")
 async def update_document(document_id: int, update: DocumentUpdate, db: Session = Depends(get_db)) -> Dict[str, Any]:
