@@ -28,11 +28,17 @@ from .funcs import (
     get_embeddings,
     chunk_list,
     store_embeddings_batch,
+    initialize_model,
+    configure_logging,
+    nomic_service_error_handler,
+    validation_error_handler,
+    request_exception_handler,
     tokenizer,
     model,
     MAX_LENGTH,
     BATCH_SIZE,
     CHUNK_SIZE,
+    MAX_BATCH_SIZE,
     DB_SERVICE_URL
 )
 
@@ -40,54 +46,19 @@ from .funcs import (
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Load configuration from environment variables
-MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "1000"))  # Max batch size per request
+logger = configure_logging()
 
 app = FastAPI(title="Nomic Embedding Service")
 
-# Initialize the embedding model
-logger.info("Loading embedding model...")
-model_name = "nomic-ai/nomic-embed-text-v1.5"
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-logger.info("Model loaded successfully")
+# Initialize the model
+tokenizer, model = initialize_model()
 
 # Error handlers
-@app.exception_handler(NomicServiceError)
-async def nomic_service_error_handler(request: Request, exc: NomicServiceError):
-    logger.error(f"Nomic service error: {str(exc)}")
-    return JSONResponse(
-        status_code=500,
-        content={"error": str(exc), "timestamp": datetime.now(timezone.utc).isoformat()}
-    )
+app.exception_handler(NomicServiceError)(nomic_service_error_handler)
+app.exception_handler(ValidationError)(validation_error_handler)
+app.exception_handler(requests.exceptions.RequestException)(request_exception_handler)
 
-@app.exception_handler(ValidationError)
-async def validation_error_handler(request: Request, exc: ValidationError):
-    logger.warning(f"Validation error: {str(exc)}")
-    return JSONResponse(
-        status_code=400,
-        content={"error": str(exc), "timestamp": datetime.now(timezone.utc).isoformat()}
-    )
-
-@app.exception_handler(requests.exceptions.RequestException)
-async def request_exception_handler(request: Request, exc: requests.exceptions.RequestException):
-    logger.error(f"Database service communication error: {str(exc)}")
-    return JSONResponse(
-        status_code=503,
-        content={
-            "error": "Database service is currently unavailable",
-            "details": str(exc),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    )
-
-# Health and Monitoring
+# Health and Monitoring Endpoints
 @app.get("/health")
 async def health_check():
     try:
@@ -122,7 +93,7 @@ async def health_check():
             }
         )
 
-# Embedding Endpoints
+# Embedding Endpoints   
 @app.post("/embed")
 async def create_embedding(document: Document):
     try:
