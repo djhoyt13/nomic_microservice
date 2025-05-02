@@ -2,525 +2,192 @@
 
 This project consists of two microservices:
 1. Database Service - A FastAPI service for storing and searching document embeddings
-2. Embedding Service - A FastAPI service for generating embeddings using a local Nomic embedding model
+2. Nomic Service - A FastAPI service for generating embeddings using the Nomic embedding model
+
+## Architecture
+
+```
+├── app/                    # Nomic Service
+│   ├── funcs/             # Helper functions and configurations
+│   │   ├── helpers.py     # Combined helper functions
+│   │   └── __init__.py    # Function exports
+│   ├── models/            # Data models and exceptions
+│   │   ├── data_models.py # Pydantic models
+│   │   ├── exceptions.py  # Custom exceptions
+│   │   └── __init__.py    # Model exports
+│   └── main.py            # Main FastAPI application
+│
+├── db_service/            # Database Service
+│   └── app/              # Database service application
+│
+├── docker-compose.yml     # Docker Compose configuration
+├── Dockerfile            # Nomic Service Dockerfile
+├── requirements.txt      # Python dependencies
+└── README.md            # This file
+```
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - Docker and Docker Compose
-- PostgreSQL 13+ with pgvector extension
+- PostgreSQL with pgvector extension (provided via Docker)
 
-## Environment Setup
+## Quick Start
 
-1. Create a `.env` file in the root directory with the following variables:
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd nomic_microservice
+```
 
-```env
+2. Start the services:
+```bash
+docker-compose up -d
+```
+
+The services will be available at:
+- Nomic Service: http://localhost:8000
+- Database Service: http://localhost:8001
+- PostgreSQL: localhost:5434
+
+## Services
+
+### Nomic Service (Port 8000)
+
+The Nomic Service handles document embedding generation using the Nomic embedding model.
+
+**Endpoints:**
+- `POST /embed` - Create embedding for a single document
+- `POST /embed_batch` - Create embeddings for multiple documents
+- `POST /search` - Search for similar documents
+- `GET /health` - Check service health
+
+### Database Service (Port 8001)
+
+The Database Service manages document storage and retrieval.
+
+**Endpoints:**
+- `POST /store` - Store a single document
+- `POST /store_batch` - Store multiple documents
+- `GET /documents` - List documents with pagination
+- `GET /documents/{id}` - Get a specific document
+- `PATCH /documents/{id}` - Update a document
+- `DELETE /documents/{id}` - Delete a document
+- `PATCH /documents/batch` - Update multiple documents
+- `DELETE /documents/batch` - Delete multiple documents
+- `GET /health` - Check service health
+
+## Configuration
+
+### Environment Variables
+
+The services are configured through environment variables in the docker-compose.yml file:
+
+```yaml
+# Nomic Service
+DB_SERVICE_URL=http://db_service:8001
+
 # Database Service
 DATABASE_URL=postgresql://postgres:postgres@db:5432/embeddings
 
-# Embedding Service Configuration
-MAX_TEXT_LENGTH=2048  # Maximum token length (model's context window)
-BATCH_SIZE=32         # Optimal batch size for processing
-MAX_BATCH_SIZE=1000   # Maximum number of texts per request
-CHUNK_SIZE=512        # Optimal chunk size for long documents
-CHUNK_OVERLAP=51      # 10% overlap between chunks (for context preservation)
+# PostgreSQL
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=embeddings
 ```
 
-## Optimal Configuration
+### Model Configuration
 
-The service is configured with optimal settings for the Nomic embedding model:
-
-1. Text Processing:
-   - Maximum text length: 2048 tokens (model's context window)
-   - Optimal chunk size: 512 tokens
-   - Chunk overlap: 51 tokens (10% of chunk size)
-   - Token-based chunking with natural boundary respect
-
-2. Batch Processing:
-   - Optimal batch size: 32 texts
-   - Maximum batch size: 1000 texts per request
-   - Automatic chunking for long documents
-   - Classification marking preservation
-
-3. Performance Considerations:
-   - Token-based length validation
-   - Efficient memory usage
-   - Context preservation through overlap
-   - Natural document boundary respect
-
-## PostgreSQL Setup
-
-### Docker Prerequisites
-
-Before running PostgreSQL with Docker, ensure Docker is properly installed and running:
-
-1. **Check Docker Installation**:
-   ```bash
-   # Windows
-   docker --version
-   
-   # If not installed, download and install Docker Desktop from:
-   # https://www.docker.com/products/docker-desktop
-   ```
-
-2. **Start Docker Daemon**:
-   - **Windows**: 
-     - Open Docker Desktop
-     - Wait for the whale icon in the system tray to stop animating
-     - Verify Docker is running with `docker info`
-   
-   - **macOS/Linux**:
-     ```bash
-     # Check Docker service status
-     sudo systemctl status docker
-     
-     # Start Docker if not running
-     sudo systemctl start docker
-     ```
-
-3. **Verify Docker is Running**:
-   ```bash
-   docker info
-   # Should show Docker system information without errors
-   ```
-
-### Option 1: Using Docker (Recommended)
-
-1. Pull the PostgreSQL image with pgvector:
-```bash
-docker pull ankane/pgvector:latest
-```
-
-2. Run PostgreSQL with pgvector:
-```bash
-docker run --name postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=embeddings -p 5432:5432 -d ankane/pgvector:latest
-```
-
-3. Verify the installation:
-```bash
-docker exec -it postgres psql -U postgres -d embeddings -c "CREATE EXTENSION vector;"
-```
-
-### Option 2: Local Installation
-
-1. Install PostgreSQL 13+:
-   - **Windows**: Download and install from [PostgreSQL Downloads](https://www.postgresql.org/download/windows/)
-   - **macOS**: `brew install postgresql@13`
-   - **Linux**: 
-     ```bash
-     sudo apt update
-     sudo apt install postgresql postgresql-contrib
-     ```
-
-2. Install pgvector extension:
-   ```bash
-   # Clone the repository
-   git clone https://github.com/pgvector/pgvector.git
-   cd pgvector
-   
-   # Build and install
-   make
-   make install
-   ```
-
-3. Create database and enable extension:
-   ```bash
-   # Create database
-   createdb embeddings
-   
-   # Connect to database and enable extension
-   psql embeddings
-   CREATE EXTENSION vector;
-   ```
-
-4. Update your `.env` file:
-   ```env
-   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/embeddings
-   ```
-
-### Verifying the Setup
-
-1. Check PostgreSQL is running:
-   ```bash
-   # Using Docker
-   docker ps | grep postgres
-   
-   # Local installation
-   pg_isready
-   ```
-
-2. Test the connection:
-   ```bash
-   psql -U postgres -d embeddings -c "SELECT 1;"
-   ```
-
-3. Verify pgvector extension:
-   ```bash
-   psql -U postgres -d embeddings -c "SELECT * FROM pg_extension WHERE extname = 'vector';"
-   ```
-
-### Docker Troubleshooting
-
-1. **Docker Daemon Not Running**:
-   - Windows: Open Docker Desktop and wait for it to fully start
-   - Check system tray for Docker icon
-   - Restart Docker Desktop if needed
-   - Run `docker info` to verify daemon is running
-
-2. **Port Conflicts (5432 already in use)**:
-   - **Check what's using port 5432**:
-     ```bash
-     # Windows
-     netstat -ano | findstr :5432
-     
-     # Linux/macOS
-     lsof -i :5432
-     ```
-   
-   - **Solutions**:
-     1. **Stop the conflicting process**:
-        ```bash
-        # If it's a PostgreSQL service
-        net stop postgresql
-        
-        # Or if it's another process, use the PID from the previous command
-        taskkill /PID <PID> /F
-        ```
-     
-     2. **Use a different port**:
-        - Modify the docker-compose.yml file:
-          ```yaml
-          services:
-            db:
-              ports:
-                - "5433:5432"  # Change first number to an available port
-          ```
-        - Update DATABASE_URL in .env:
-          ```env
-          DATABASE_URL=postgresql://postgres:postgres@localhost:5433/embeddings
-          ```
-     
-     3. **Clean up existing containers**:
-        ```bash
-        # Stop all containers
-        docker-compose down
-        
-        # Remove the specific container causing issues
-        docker rm -f nomic_microservice-db-1
-        
-        # Remove any lingering volumes
-        docker volume prune
-        ```
-
-3. **Permission Issues**:
-   - Windows: Ensure running as administrator
-   - Linux: Add user to docker group:
-     ```bash
-     sudo usermod -aG docker $USER
-     # Log out and back in for changes to take effect
-     ```
-
-4. **Container Issues**:
-   - Check container status:
-     ```bash
-     docker ps -a
-     ```
-   - View container logs:
-     ```bash
-     docker logs postgres
-     ```
-   - Restart container if needed:
-     ```bash
-     docker restart postgres
-     ```
-
-### Common Port Conflicts and Solutions
-
-1. **PostgreSQL Default Port (5432)**:
-   - Common causes:
-     - Another PostgreSQL instance running
-     - Previous Docker container not properly stopped
-     - System service using the port
-   
-   - Resolution steps:
-     1. Identify the process:
-        ```bash
-        # Windows
-        netstat -ano | findstr :5432
-        # Note the PID
-        tasklist | findstr <PID>
-        ```
-     
-     2. Stop the process:
-        ```bash
-        # Windows
-        taskkill /PID <PID> /F
-        
-        # Or stop PostgreSQL service
-        net stop postgresql
-        ```
-     
-     3. If using Docker, clean up:
-        ```bash
-        # Stop all containers
-        docker-compose down
-        
-        # Remove the specific container causing issues
-        docker rm -f nomic_microservice-db-1
-        
-        # Remove any lingering volumes
-        docker volume prune
-        ```
-
-2. **Alternative Port Configuration**:
-   If you can't free up port 5432, you can use a different port:
-   
-   ```yaml
-   # docker-compose.yml
-   services:
-     db:
-       ports:
-         - "5433:5432"  # Map host port 5433 to container port 5432
-   ```
-   
-   Then update your .env file:
-   ```env
-   DATABASE_URL=postgresql://postgres:postgres@localhost:5433/embeddings
-   ```
-
-## Database Service
-
-The database service provides endpoints for storing and searching document embeddings using PostgreSQL with pgvector.
-
-### Features
-- Store document embeddings with metadata
-- Search for similar documents using cosine similarity
-- Health check endpoint
-- Comprehensive error handling
-- Connection pooling and retry mechanisms
-
-### API Endpoints
-
-- `POST /store` - Store a document embedding
-  ```json
-  {
-    "text": "document text",
-    "embedding": [0.1, 0.2, ...], // 768-dimensional vector
-    "metadata": {"key": "value"} // optional
-  }
-  ```
-
-- `POST /search` - Search for similar documents
-  ```json
-  {
-    "embedding": [0.1, 0.2, ...], // 768-dimensional vector
-    "top_k": 5 // optional, defaults to 5
-  }
-  ```
-
-- `GET /health` - Check service health
-
-### Running the Database Service
-
-1. Using Docker Compose (recommended):
-   ```bash
-   docker-compose up db_service
-   ```
-
-2. Running locally:
-   ```bash
-   cd db_service
-   pip install -r requirements.txt
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
-   ```
-
-## Embedding Service
-
-The embedding service generates embeddings using a local Nomic embedding model.
-
-### Features
-- Generate embeddings for text documents
-- Batch processing support
-- Error handling and retry mechanisms
-- Rate limiting
-
-### API Endpoints
-
-- `POST /embed` - Generate embeddings for text
-  ```json
-  {
-    "text": "document text"
-  }
-  ```
-
-- `POST /embed_batch` - Generate embeddings for multiple texts
-  ```json
-  {
-    "texts": ["text1", "text2", ...]
-  }
-  ```
-
-### Running the Embedding Service
-
-1. Using Docker Compose (recommended):
-   ```bash
-   docker-compose up embedding_service
-   ```
-
-2. Running locally:
-   ```bash
-   cd embedding_service
-   pip install -r requirements.txt
-   uvicorn app.main:app --host 0.0.0.0 --port 8001
-   ```
-
-## Docker Compose Setup
-
-The project includes a `docker-compose.yml` file for easy deployment:
-
-```bash
-# Start all services
-docker-compose up -d
-
-# Start specific service
-docker-compose up db_service
-docker-compose up embedding_service
-
-# View logs
-docker-compose logs -f
-
-# Stop services
-docker-compose down
-```
+The Nomic Service uses the following model configuration:
+- Model: nomic-ai/nomic-embed-text-v1
+- Maximum token length: 8192
+- Batch size: 32
+- Chunk size: 1024
+- Maximum batch size: 100
 
 ## Development
 
-### Setting up the Development Environment
+### Local Development
 
-1. Clone the repository
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### Running Tests
-
+1. Create a virtual environment:
 ```bash
-# Database Service Tests
-cd db_service
-pytest
-
-# Embedding Service Tests
-cd embedding_service
-pytest
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-### Code Style
-
-The project uses:
-- Black for code formatting
-- isort for import sorting
-- flake8 for linting
-
-Run formatting and linting:
+2. Install dependencies:
 ```bash
-# Format code
-black .
-isort .
-
-# Run linter
-flake8
+pip install -r requirements.txt
 ```
 
-## Error Handling
+3. Start the services:
+```bash
+docker-compose up -d
+```
 
-Both services implement comprehensive error handling:
+### Testing
 
-- Database Service:
-  - Database connection errors
-  - Validation errors
-  - Service errors
-  - HTTP exceptions
+To test the services, you can use the following curl commands:
 
-- Embedding Service:
-  - API errors
-  - Rate limiting
-  - Validation errors
-  - Service errors
+1. Create an embedding:
+```bash
+curl -X POST http://localhost:8000/embed \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Test document", "metadata": {"source": "test"}}'
+```
 
-All errors return consistent JSON responses with:
-- Error message
-- Details (when available)
-- Timestamp
+2. Search for similar documents:
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"text": "test document", "limit": 5}'
+```
 
-## Monitoring and Logging
+3. Check service health:
+```bash
+curl http://localhost:8000/health
+```
 
-Both services implement logging with:
-- Timestamps
-- Log levels
-- Context information
-- Error details
+## Production Deployment
 
-Logs are available through:
-- Docker logs
-- Local file system (when running locally)
-- Standard output
+For production deployment:
 
-## Security Considerations
-
-1. API Keys:
-   - Store API keys in environment variables
-   - Never commit API keys to version control
-   - Use .env file for local development
-
-2. Database:
-   - Use strong passwords
-   - Limit database access
-   - Use connection pooling
-   - Implement proper error handling
-
-3. API Security:
-   - CORS configuration
-   - Input validation
-   - Rate limiting
-   - Error handling
+1. Update the environment variables in docker-compose.yml with production values
+2. Configure proper security settings
+3. Set up monitoring and logging
+4. Configure proper backup strategies for the PostgreSQL database
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. Environment Variables:
-   - Check if `.env` file exists and is properly formatted
-   - Verify DATABASE_URL is correctly set
-   - Ensure environment variables are being loaded
+1. **Port Conflicts**
+   - If port 8000 or 8001 is in use, update the port mappings in docker-compose.yml
+   - If port 5434 is in use, update the PostgreSQL port mapping
 
-2. Database Connection Issues:
-   - Check if PostgreSQL is running
-   - Verify port availability
-   - Test database connection string
-   - Ensure pgvector extension is installed
+2. **Database Connection Issues**
+   - Check if the PostgreSQL container is running
+   - Verify the database credentials
+   - Check the database service logs
 
-3. Model Loading Issues:
-   - Check if required model dependencies are installed
-   - Verify disk space for model downloads
-   - Check network connectivity for initial model download
+3. **Model Loading Issues**
+   - Check if the model can be downloaded
+   - Verify sufficient disk space
+   - Check the Nomic service logs
 
-4. Security Best Practices:
-   - Store sensitive information in environment variables
-   - Never commit sensitive information to version control
-   - Use appropriate file permissions
-   - Follow security guidelines for production deployments
+### Logs
 
-### Getting Help
+To view service logs:
+```bash
+# All services
+docker-compose logs
 
-For issues not covered in this README:
-1. Check the service logs
-2. Review the error responses
-3. Consult the API documentation
-4. Open an issue in the repository
+# Specific service
+docker-compose logs nomic_service
+docker-compose logs db_service
+docker-compose logs db
+```
+
+## License
+
+[Your License Here]
